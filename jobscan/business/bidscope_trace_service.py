@@ -129,6 +129,7 @@ def trace_bidscope_regions(
                 field_name="negative_points",
             )
             box = _normalized_box(region.get("box"))
+            clip_polygon = _normalized_polygon(region.get("clip_polygon") or [])
             if not positive and box is None:
                 raise BidScopeInputError(
                     f"Region {region['region_id']} requires positive_points, a box, or an explicit polygon."
@@ -140,6 +141,10 @@ def trace_bidscope_regions(
             positive_pixels = _normalized_to_pixels(positive, inference_image.size)
             negative_pixels = _normalized_to_pixels(negative, inference_image.size)
             box_pixels = _box_to_pixels(box, inference_image.size) if box else None
+            clip_polygon_pixels = _normalized_to_pixels(
+                clip_polygon,
+                inference_image.size,
+            )
             if active_segmenter is None:
                 if not str(sam2_url or "").strip():
                     raise BidScopeUnavailableError("SAM2 drawing segmentation is not configured.")
@@ -163,9 +168,14 @@ def trace_bidscope_regions(
                 box=box_pixels,
                 expected_shape=(inference_image.height, inference_image.width),
             )
+            clipped_mask = _hard_clip_mask(
+                np.asarray(candidate.mask, dtype=bool),
+                box=box_pixels,
+                clip_polygon=clip_polygon_pixels,
+            )
             minimum_area = max(100.0, inference_image.width * inference_image.height * 0.00015)
             inference_sections = sections_from_mask(
-                candidate.mask,
+                clipped_mask,
                 simplification_tolerance=2.5,
                 minimum_section_area_pixels=minimum_area,
                 edge_snap_strength=0.0,
@@ -182,7 +192,11 @@ def trace_bidscope_regions(
                 architectural_cleanup=bool(region.get("architectural_cleanup", True)),
                 pixels_per_foot=pixels_per_foot,
             )
-            trace_method = "sam2_prompted_region"
+            trace_method = (
+                "sam2_prompted_region_hard_clipped"
+                if box_pixels is not None or clip_polygon_pixels
+                else "sam2_prompted_region"
+            )
             model_name = segmentation.model_name
             model_version = segmentation.model_version
             model_score = round(float(candidate.score), 4)
@@ -215,10 +229,13 @@ def trace_bidscope_regions(
             "page_id": page_id,
             "sheet_id": str(page.get("sheet_id") or ""),
             "measurement_type": str(region.get("measurement_type") or "area"),
+            "quantity_role": str(region.get("quantity_role") or "additive"),
+            "deduct_from_region_id": str(region.get("deduct_from_region_id") or ""),
             "trace_method": trace_method,
             "model_name": model_name,
             "model_version": model_version,
             "model_score": model_score,
+            "hard_clip_applied": trace_method.endswith("hard_clipped"),
             "scale_calibration": calibration,
             "measurements": measurement,
             "sections": public_sections,
@@ -236,7 +253,9 @@ def trace_bidscope_regions(
     }
     for item in traced:
         prior_traces[item["region_id"]] = item
-    context["traces"] = list(prior_traces.values())
+    combined_traces = list(prior_traces.values())
+    quantity_summary = _apply_linked_deductions(combined_traces)
+    context["traces"] = combined_traces
     context["trace_overlay_asset_name"] = overlay_name
     _write_json_atomic(context_path / "context.json", context)
 
@@ -245,6 +264,7 @@ def trace_bidscope_regions(
             "SAM2 is a prompted boundary proposal, not proof that the selected region matches the bid scope.",
             "Boundary length is the complete closed-region perimeter; estimator review must exclude edges that are not in scope.",
             "Returned normalized polygon vertices can be corrected and resubmitted as an explicit polygon.",
+            "Net wall area is gross traced surface minus linked, estimator-verified opening deductions.",
         ]
     )
     return {
@@ -252,6 +272,7 @@ def trace_bidscope_regions(
         "measurement_context_id": measurement_context_id,
         "trace_count": len(traced),
         "traces": traced,
+        "quantity_summary": quantity_summary,
         "review_status": "requires_estimator_verification",
         "segmentation_status": "completed" if any(item["trace_method"].startswith("sam2") for item in traced) else "not_requested",
         "warnings": list(dict.fromkeys(warnings)),
@@ -323,6 +344,33 @@ def _box_to_pixels(
 ) -> tuple[float, float, float, float]:
     points = _normalized_to_pixels([(box[0], box[1]), (box[2], box[3])], size)
     return points[0][0], points[0][1], points[1][0], points[1][1]
+
+
+def _hard_clip_mask(
+    mask: np.ndarray,
+    *,
+    box: tuple[float, float, float, float] | None,
+    clip_polygon: list[tuple[float, float]],
+) -> np.ndarray:
+    clipped = np.asarray(mask, dtype=bool).copy()
+    if box is None and not clip_polygon:
+        return clipped
+    allowed_image = Image.new("L", (clipped.shape[1], clipped.shape[0]), 0)
+    allowed = ImageDraw.Draw(allowed_image)
+    if box is not None:
+        allowed.rectangle(box, fill=255)
+    else:
+        allowed.rectangle((0, 0, clipped.shape[1] - 1, clipped.shape[0] - 1), fill=255)
+    if clip_polygon:
+        polygon_image = Image.new("L", allowed_image.size, 0)
+        ImageDraw.Draw(polygon_image).polygon(clip_polygon, fill=255)
+        allowed_mask = np.asarray(allowed_image, dtype=bool) & np.asarray(
+            polygon_image,
+            dtype=bool,
+        )
+    else:
+        allowed_mask = np.asarray(allowed_image, dtype=bool)
+    return clipped & allowed_mask
 
 
 def _inference_image(
@@ -492,6 +540,89 @@ def _measure_region(
     return result
 
 
+def _apply_linked_deductions(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id = {str(trace.get("region_id") or ""): trace for trace in traces}
+    linked: dict[str, list[dict[str, Any]]] = {}
+    for trace in traces:
+        if str(trace.get("quantity_role") or "additive") != "deduction":
+            continue
+        target_id = str(trace.get("deduct_from_region_id") or "").strip()
+        target = by_id.get(target_id)
+        if target is None:
+            raise BidScopeInputError(
+                f"Deduction region {trace.get('region_id')} references unknown gross region {target_id}."
+            )
+        if str(target.get("quantity_role") or "additive") == "deduction":
+            raise BidScopeInputError(
+                "A deduction region cannot deduct from another deduction region."
+            )
+        if str(target.get("page_id") or "") != str(trace.get("page_id") or ""):
+            raise BidScopeInputError(
+                "A deduction region must be on the same page as its gross region."
+            )
+        measurements = dict(trace.get("measurements") or {})
+        if measurements.get("unit") != "sqft":
+            raise BidScopeInputError("Opening deductions must be measured in square feet.")
+        linked.setdefault(target_id, []).append(trace)
+
+    summaries: list[dict[str, Any]] = []
+    for trace in traces:
+        if str(trace.get("quantity_role") or "additive") == "deduction":
+            continue
+        measurements = trace.get("measurements") or {}
+        if measurements.get("unit") != "sqft":
+            continue
+        if "gross_wall_area_sqft" in measurements:
+            gross = float(measurements["gross_wall_area_sqft"])
+            manual = float(measurements.get("opening_deduction_sqft") or 0)
+        else:
+            gross = float(
+                measurements.get("gross_quantity_sqft")
+                or measurements.get("enclosed_area_sqft")
+                or measurements.get("quantity")
+                or 0
+            )
+            manual = float(measurements.get("manual_opening_deduction_sqft") or 0)
+        deductions = linked.get(str(trace.get("region_id") or ""), [])
+        traced_deduction = sum(
+            float((deduction.get("measurements") or {}).get("quantity") or 0)
+            for deduction in deductions
+        )
+        total_deduction = manual + traced_deduction
+        net = gross - total_deduction
+        if net <= 0:
+            raise BidScopeInputError(
+                f"Opening deductions must be less than gross area for region {trace.get('region_id')}."
+            )
+        measurements.update(
+            {
+                "gross_quantity_sqft": round(gross, 1),
+                "manual_opening_deduction_sqft": round(manual, 1),
+                "traced_opening_deduction_sqft": round(traced_deduction, 1),
+                "total_opening_deduction_sqft": round(total_deduction, 1),
+                "quantity": round(net, 1),
+                "unit": "sqft",
+            }
+        )
+        summaries.append(
+            {
+                "region_id": str(trace.get("region_id") or ""),
+                "label": str(trace.get("label") or trace.get("region_id") or ""),
+                "page_id": str(trace.get("page_id") or ""),
+                "sheet_id": str(trace.get("sheet_id") or ""),
+                "gross_quantity_sqft": round(gross, 1),
+                "manual_opening_deduction_sqft": round(manual, 1),
+                "traced_opening_deduction_sqft": round(traced_deduction, 1),
+                "net_quantity_sqft": round(net, 1),
+                "deduction_region_ids": [
+                    str(deduction.get("region_id") or "") for deduction in deductions
+                ],
+                "review_status": "requires_estimator_verification",
+            }
+        )
+    return summaries
+
+
 def _normalized_records(
     points: list[tuple[float, float]], size: tuple[int, int]
 ) -> list[dict[str, float]]:
@@ -515,16 +646,32 @@ def _build_overlay_contact_sheet(
         drawing = Image.new("RGBA", overlay.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(drawing)
         for index, row in enumerate(region_rows):
-            color = _COLORS[index % len(_COLORS)]
+            is_deduction = row["result"].get("quantity_role") == "deduction"
+            color = (220, 20, 60) if is_deduction else _COLORS[index % len(_COLORS)]
             for section in row["sections"]:
                 polygon = [(float(x), float(y)) for x, y in section.polygon]
                 if len(polygon) < 3:
                     continue
                 draw.polygon(polygon, fill=(*color, 55))
                 draw.line(polygon, fill=(*color, 255), width=6, joint="curve")
+                for hole in section.holes:
+                    hole_polygon = [(float(x), float(y)) for x, y in hole]
+                    if len(hole_polygon) < 3:
+                        continue
+                    draw.polygon(hole_polygon, fill=(0, 0, 0, 0))
+                    draw.line(
+                        hole_polygon,
+                        fill=(220, 20, 60, 255),
+                        width=5,
+                        joint="curve",
+                    )
                 draw.text(
                     polygon[0],
-                    str(row["result"]["label"]),
+                    (
+                        "DEDUCTION: " + str(row["result"]["label"])
+                        if is_deduction
+                        else str(row["result"]["label"])
+                    ),
                     fill=(255, 255, 255, 255),
                     stroke_width=3,
                     stroke_fill=(0, 0, 0, 255),

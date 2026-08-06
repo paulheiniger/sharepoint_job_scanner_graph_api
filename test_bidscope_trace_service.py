@@ -82,6 +82,43 @@ def test_sam2_prompted_region_returns_scaled_measurement_and_overlay(tmp_path) -
     assert base64.b64decode(attachment["content"]).startswith(b"\xff\xd8")
 
 
+def test_sam2_mask_is_hard_clipped_to_requested_box(tmp_path) -> None:
+    context_id, page_id = _measurement_context(tmp_path)
+    mask = np.ones((100, 100), dtype=bool)
+
+    result = trace_bidscope_regions(
+        measurement_context_id=context_id,
+        regions=[
+            {
+                "region_id": "bounded-facade",
+                "page_id": page_id,
+                "measurement_type": "area",
+                "positive_points": [{"x": 0.5, "y": 0.5}],
+                "box": {
+                    "x_min": 0.2,
+                    "y_min": 0.2,
+                    "x_max": 0.8,
+                    "y_max": 0.8,
+                },
+            }
+        ],
+        sam2_url="",
+        sam2_api_key="",
+        artifact_dir=tmp_path,
+        segmenter=MockRoofSegmenter([mask]),
+    )
+
+    trace = result["traces"][0]
+    assert trace["hard_clip_applied"] is True
+    assert trace["trace_method"] == "sam2_prompted_region_hard_clipped"
+    assert trace["measurements"]["quantity"] < 40
+    polygon = trace["sections"][0]["polygon"]
+    assert min(point["x"] for point in polygon) >= 0.19
+    assert max(point["x"] for point in polygon) <= 0.81
+    assert min(point["y"] for point in polygon) >= 0.19
+    assert max(point["y"] for point in polygon) <= 0.81
+
+
 def test_explicit_polygon_can_calculate_net_wall_area(tmp_path) -> None:
     context_id, page_id = _measurement_context(tmp_path)
 
@@ -113,6 +150,105 @@ def test_explicit_polygon_can_calculate_net_wall_area(tmp_path) -> None:
     assert trace["measurements"]["gross_wall_area_sqft"] == 198.0
     assert trace["measurements"]["quantity"] == 178.0
     assert result["segmentation_status"] == "not_requested"
+
+
+def test_opening_region_is_subtracted_from_gross_surface_on_same_image(tmp_path) -> None:
+    context_id, page_id = _measurement_context(tmp_path)
+
+    result = trace_bidscope_regions(
+        measurement_context_id=context_id,
+        regions=[
+            {
+                "region_id": "south-gross",
+                "page_id": page_id,
+                "label": "South elevation gross surface",
+                "measurement_type": "area",
+                "polygon": [
+                    {"x": 0.0, "y": 0.0},
+                    {"x": 1.0, "y": 0.0},
+                    {"x": 1.0, "y": 1.0},
+                    {"x": 0.0, "y": 1.0},
+                ],
+            },
+            {
+                "region_id": "south-openings",
+                "page_id": page_id,
+                "label": "South elevation windows and doors",
+                "measurement_type": "area",
+                "quantity_role": "deduction",
+                "deduct_from_region_id": "south-gross",
+                "polygon": [
+                    {"x": 0.1, "y": 0.1},
+                    {"x": 0.2, "y": 0.1},
+                    {"x": 0.2, "y": 0.2},
+                    {"x": 0.1, "y": 0.2},
+                ],
+            },
+        ],
+        sam2_url="",
+        sam2_api_key="",
+        artifact_dir=tmp_path,
+    )
+
+    summary = result["quantity_summary"][0]
+    assert summary["region_id"] == "south-gross"
+    assert summary["gross_quantity_sqft"] == 98.0
+    assert summary["traced_opening_deduction_sqft"] == 1.0
+    assert summary["net_quantity_sqft"] == 97.0
+    assert summary["deduction_region_ids"] == ["south-openings"]
+    assert result["traces"][1]["quantity_role"] == "deduction"
+
+
+def test_later_opening_pass_updates_persisted_gross_quantity(tmp_path) -> None:
+    context_id, page_id = _measurement_context(tmp_path)
+    common = {
+        "measurement_context_id": context_id,
+        "sam2_url": "",
+        "sam2_api_key": "",
+        "artifact_dir": tmp_path,
+    }
+    trace_bidscope_regions(
+        **common,
+        regions=[
+            {
+                "region_id": "west-gross",
+                "page_id": page_id,
+                "measurement_type": "area",
+                "polygon": [
+                    {"x": 0.0, "y": 0.0},
+                    {"x": 1.0, "y": 0.0},
+                    {"x": 1.0, "y": 1.0},
+                    {"x": 0.0, "y": 1.0},
+                ],
+            }
+        ],
+    )
+
+    deduction_pass = trace_bidscope_regions(
+        **common,
+        regions=[
+            {
+                "region_id": "west-openings",
+                "page_id": page_id,
+                "measurement_type": "area",
+                "quantity_role": "deduction",
+                "deduct_from_region_id": "west-gross",
+                "polygon": [
+                    {"x": 0.1, "y": 0.1},
+                    {"x": 0.2, "y": 0.1},
+                    {"x": 0.2, "y": 0.2},
+                    {"x": 0.1, "y": 0.2},
+                ],
+            }
+        ],
+    )
+
+    assert deduction_pass["quantity_summary"][0]["net_quantity_sqft"] == 97.0
+    persisted = json.loads(
+        (tmp_path / context_id / "context.json").read_text(encoding="utf-8")
+    )
+    gross = next(trace for trace in persisted["traces"] if trace["region_id"] == "west-gross")
+    assert gross["measurements"]["traced_opening_deduction_sqft"] == 1.0
 
 
 def test_trace_rejects_page_without_confirmed_scale(tmp_path) -> None:

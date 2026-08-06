@@ -1403,6 +1403,15 @@ class BidScopeTraceRegion(BaseModel):
     )
     label: str = Field(default="", max_length=160)
     measurement_type: Literal["area", "boundary_length", "wall_area"] = "area"
+    quantity_role: Literal["additive", "deduction"] = Field(
+        default="additive",
+        description="Whether this region adds scope or subtracts an opening from another region.",
+    )
+    deduct_from_region_id: str = Field(
+        default="",
+        max_length=80,
+        description="Gross region_id that receives this traced opening deduction.",
+    )
     positive_points: list[BidScopeNormalizedPoint] = Field(default_factory=list, max_length=12)
     negative_points: list[BidScopeNormalizedPoint] = Field(default_factory=list, max_length=20)
     box: BidScopeNormalizedBox | None = None
@@ -1412,6 +1421,11 @@ class BidScopeTraceRegion(BaseModel):
         description=(
             "Optional estimator-corrected closed boundary. When supplied, it replaces SAM2 prompting."
         ),
+    )
+    clip_polygon: list[BidScopeNormalizedPoint] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Optional hard boundary that clips every SAM2 mask to the approved façade.",
     )
     architectural_cleanup: bool = Field(
         default=True,
@@ -1424,10 +1438,17 @@ class BidScopeTraceRegion(BaseModel):
     def validate_trace_inputs(self) -> "BidScopeTraceRegion":
         if self.polygon and len(self.polygon) < 3:
             raise ValueError("An explicit polygon requires at least three vertices.")
+        if self.clip_polygon and len(self.clip_polygon) < 3:
+            raise ValueError("clip_polygon requires at least three vertices.")
         if not self.polygon and not self.positive_points and self.box is None:
             raise ValueError("Provide positive_points, a box, or an explicit polygon.")
         if self.measurement_type == "wall_area" and self.height_ft is None:
             raise ValueError("wall_area requires height_ft.")
+        if self.quantity_role == "deduction":
+            if self.measurement_type != "area":
+                raise ValueError("deduction regions must use measurement_type area.")
+            if not self.deduct_from_region_id.strip():
+                raise ValueError("deduction regions require deduct_from_region_id.")
         return self
 
 
@@ -1455,6 +1476,7 @@ class BidScopeRegionTraceResponse(BaseModel):
     measurement_context_id: str
     trace_count: int = Field(ge=1, le=8)
     traces: list[dict[str, Any]] = Field(min_length=1, max_length=8)
+    quantity_summary: list[dict[str, Any]] = Field(default_factory=list, max_length=40)
     review_status: Literal["requires_estimator_verification"]
     segmentation_status: Literal["completed", "not_requested"]
     warnings: list[str] = Field(default_factory=list)

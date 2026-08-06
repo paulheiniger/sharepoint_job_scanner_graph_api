@@ -78,6 +78,20 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   Use normalized positive points inside the intended connected region, negative
   points on adjacent exclusions, and a tight normalized box. For `wall_area`,
   pass a confirmed height and explicit opening deduction; do not infer either.
+- A supplied box is a hard mask boundary, not merely a SAM2 hint. Keep it tight
+  to the individual elevation view so notes, revision clouds, adjacent views,
+  grade graphics, and title blocks cannot spill into the result. When the valid
+  façade is not rectangular, provide `clip_polygon` around its maximum allowed
+  extent. When the exact boundary is visually unambiguous, use `polygon` to
+  bypass SAM2 rather than accepting a leaking mask.
+- For elevation takeoffs, trace the gross insulated surface and the openings on
+  the same image as separate regions. Set each window/door/opening region to
+  `measurement_type: area`, `quantity_role: deduction`, and link it with
+  `deduct_from_region_id` to the matching gross elevation region. Multiple
+  positive points may be used for a grouped opening mask; add more deduction
+  regions when one mask misses openings. Report gross surface, traced opening
+  deductions, and net surface separately. Do not present a net wall quantity
+  until the opening overlay has been visually reviewed.
 - Inspect `bidscope_traced_regions.jpg`. SAM2 proposes a boundary but does not
   prove scope. Verify every edge, report that closed-boundary length includes
   the complete perimeter, and keep results draft-only. To correct a boundary,

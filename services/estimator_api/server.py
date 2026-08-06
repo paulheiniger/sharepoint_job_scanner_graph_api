@@ -1117,12 +1117,11 @@ def bidscope_measurement_context(
     response_model=BidScopeRegionTraceResponse,
     response_model_exclude_none=True,
     operation_id="traceBidScopeRegions",
-    summary="Trace and measure confirmed drawing regions",
+    summary="Trace gross regions and opening deductions",
     description=(
-        "Uses normalized page prompts with private SAM2, or an explicit corrected "
-        "polygon, to trace confirmed bid regions. Confirmed drawing scale converts "
-        "geometry to area, closed-boundary length, or wall area. Every result and "
-        "overlay requires estimator verification."
+        "Traces confirmed scope and linked window or door deductions with private "
+        "SAM2 or corrected polygons. Returns review overlays and gross, deduction, "
+        "and net quantities using confirmed drawing scale."
     ),
 )
 def bidscope_region_trace(
