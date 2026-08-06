@@ -160,9 +160,10 @@ def build_bidscope_review_packet_from_inspection(
         for row in selection_rows
         if row["selection_tier"] in {"supporting_reference", "connected_context"}
     ]
-    reference_trees, scope_gaps = _build_seed_reference_trees(
+    reference_trees, scope_gaps, reference_tree_coverage = _build_seed_reference_trees(
         graph=result.get("graph"),
-        seed_nodes=list(result.get("seed_nodes") or []),
+        seed_nodes=[str(row.get("page_id") or "") for row in seed_rows],
+        available_seed_count=len(result.get("seed_nodes") or []),
         tree_nodes=tree_nodes,
         selection_rows=selection_rows,
         reference_depth=reference_depth,
@@ -179,6 +180,10 @@ def build_bidscope_review_packet_from_inspection(
         warnings.append("No high-confidence trade-specific seed page was found; the packet contains the strongest available page candidates.")
     if not measurement_rows:
         warnings.append("No reference-linked measurement page cleared the deterministic threshold; visually review the packet before continuing.")
+    if reference_tree_coverage.get("truncated"):
+        warnings.append(
+            "Reference-tree details were bounded for the Assistant response; review coverage.reference_tree and do not infer completeness from omitted branches."
+        )
     if rasterized:
         warnings.append("The review packet was rasterized to keep the ChatGPT Action attachment within its size budget.")
 
@@ -224,6 +229,7 @@ def build_bidscope_review_packet_from_inspection(
             "packet_pages_returned": len(review_pages),
             "packet_page_limit": max_packet_pages,
             "selection_is_partial": bool(result.get("partial") or deferred_count),
+            "reference_tree": reference_tree_coverage,
         },
         "measurement_readiness": {
             "status": "requires_confirmed_pages_and_scale",
@@ -808,12 +814,19 @@ def _build_seed_reference_trees(
     *,
     graph: nx.DiGraph | None,
     seed_nodes: list[str],
+    available_seed_count: int,
     tree_nodes: list[dict[str, Any]],
     selection_rows: list[dict[str, Any]],
     reference_depth: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if graph is None:
-        return [], []
+        return [], [], {
+            "seed_pages_available": available_seed_count,
+            "seed_pages_returned": 0,
+            "measurement_targets_returned": 0,
+            "scope_gaps_returned": 0,
+            "truncated": bool(available_seed_count),
+        }
     tree_by_id = {
         str(node.get("node_id") or node.get("global_page_id") or ""): node
         for node in tree_nodes
@@ -830,6 +843,7 @@ def _build_seed_reference_trees(
     undirected = graph.to_undirected()
     reference_trees: list[dict[str, Any]] = []
     scope_gaps: list[dict[str, Any]] = []
+    truncated = available_seed_count > len(seed_nodes)
 
     for seed_id in seed_nodes[:20]:
         if seed_id not in graph:
@@ -885,22 +899,6 @@ def _build_seed_reference_trees(
                 "assistant_area_description_required": True,
             }
             targets.append(target_row)
-            if target_page_id not in packet_by_page_id:
-                scope_gaps.append(
-                    {
-                        "seed_page_id": seed_page_id,
-                        "seed_sheet_id": seed_sheet_id,
-                        "gap_type": "measurement_page_omitted_from_review_packet",
-                        "missing_sheet_id": target_row["sheet_id"],
-                        "from_sheet_id": steps[-1]["from_sheet_id"] if steps else seed_sheet_id,
-                        "reference_context": steps[-1]["reference_context"] if steps else "",
-                        "impact": (
-                            "A measurement page was resolved in the scanned package but is not attached in the bounded review packet. "
-                            "Do not measure this branch until that page is retrieved."
-                        ),
-                    }
-                )
-
         targets.sort(
             key=lambda row: (
                 not bool(row["in_review_packet"]),
@@ -908,13 +906,67 @@ def _build_seed_reference_trees(
                 str(row["sheet_id"]),
             )
         )
-        missing_references = _unresolved_references_for_seed(
+        selected_targets = targets[:6]
+        if len(targets) > len(selected_targets):
+            truncated = True
+            scope_gaps.append(
+                {
+                    "seed_page_id": seed_page_id,
+                    "seed_sheet_id": seed_sheet_id,
+                    "gap_type": "additional_measurement_targets_not_expanded",
+                    "missing_sheet_id": "",
+                    "from_sheet_id": seed_sheet_id,
+                    "reference_context": "",
+                    "omitted_target_count": len(targets) - len(selected_targets),
+                    "impact": (
+                        "Additional resolved measurement targets were summarized to keep the Assistant response bounded. "
+                        "Do not treat this seed branch as complete."
+                    ),
+                }
+            )
+        for target_row in selected_targets:
+            if target_row["in_review_packet"]:
+                continue
+            steps = target_row["reference_steps"]
+            scope_gaps.append(
+                {
+                    "seed_page_id": seed_page_id,
+                    "seed_sheet_id": seed_sheet_id,
+                    "gap_type": "measurement_page_omitted_from_review_packet",
+                    "missing_sheet_id": target_row["sheet_id"],
+                    "from_sheet_id": steps[-1]["from_sheet_id"] if steps else seed_sheet_id,
+                    "reference_context": steps[-1]["reference_context"] if steps else "",
+                    "impact": (
+                        "A measurement page was resolved but is not attached in the bounded review packet. "
+                        "Do not measure this branch until that page is retrieved."
+                    ),
+                }
+            )
+        missing_reference_candidates = _unresolved_references_for_seed(
             graph,
             seed_id=seed_id,
             seed_page_id=seed_page_id,
             seed_sheet_id=seed_sheet_id,
             reference_depth=reference_depth,
         )
+        missing_references = missing_reference_candidates[:8]
+        if len(missing_reference_candidates) > len(missing_references):
+            truncated = True
+            missing_references.append(
+                {
+                    "seed_page_id": seed_page_id,
+                    "seed_sheet_id": seed_sheet_id,
+                    "gap_type": "additional_unresolved_references_not_expanded",
+                    "missing_sheet_id": "",
+                    "from_sheet_id": seed_sheet_id,
+                    "reference_context": "",
+                    "omitted_reference_count": len(missing_reference_candidates) - 8,
+                    "impact": (
+                        "Additional unresolved references were summarized to keep the Assistant response within its size limit. "
+                        "Do not treat this branch as complete."
+                    ),
+                }
+            )
         scope_gaps.extend(missing_references)
         seed_gaps = [
             gap for gap in scope_gaps if gap.get("seed_page_id") == seed_page_id
@@ -952,9 +1004,9 @@ def _build_seed_reference_trees(
                 "packet_page": packet_by_page_id.get(seed_page_id),
                 "scope_evidence": evidence,
                 "scope_evidence_summary": evidence_summary,
-                "measurement_targets": targets[:12],
-                "supporting_pages": list(supporting_by_id.values())[:20],
-                "missing_references": missing_references[:20],
+                "measurement_targets": selected_targets,
+                "supporting_pages": list(supporting_by_id.values())[:10],
+                "missing_references": missing_references,
                 "status": status,
                 "assistant_review_requirement": (
                     "Explain what the seed establishes, follow each reference step, and describe the exact visible area to measure on "
@@ -962,7 +1014,23 @@ def _build_seed_reference_trees(
                 ),
             }
         )
-    return reference_trees, scope_gaps[:100]
+    bounded_scope_gaps = scope_gaps[:24]
+    if len(scope_gaps) > len(bounded_scope_gaps):
+        truncated = True
+    coverage = {
+        "seed_pages_available": available_seed_count,
+        "seed_pages_returned": len(reference_trees),
+        "measurement_targets_returned": sum(
+            len(tree.get("measurement_targets") or []) for tree in reference_trees
+        ),
+        "scope_gaps_returned": len(bounded_scope_gaps),
+        "truncated": truncated,
+        "note": (
+            "Reference trees are limited to seed pages in the attached review packet, six measurement targets and eight unresolved "
+            "references per seed, and 24 total scope gaps. Truncation is summarized and never implies complete coverage."
+        ),
+    }
+    return reference_trees, bounded_scope_gaps, coverage
 
 
 def _unresolved_references_for_seed(

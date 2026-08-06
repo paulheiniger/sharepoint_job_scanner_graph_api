@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import base64
+import json
 from dataclasses import replace
 
 import fitz
+import networkx as nx
 
 from ingest.package_ingest import inspect_uploaded_package
 from jobscan.business.bidscope_service import (
     BidScopeInputError,
+    _build_seed_reference_trees,
     _detect_drawing_scales,
     _validate_sharepoint_url,
     build_bidscope_review_packet_from_inspection,
@@ -207,6 +210,61 @@ def test_bidscope_seed_tree_reports_missing_referenced_measurement_sheet(tmp_pat
         for gap in result["scope_gaps"]
     )
     assert result["measurement_readiness"]["scope_gap_count"] >= 2
+
+
+def test_reference_tree_payload_bounds_large_unresolved_reference_sets() -> None:
+    graph = nx.DiGraph()
+    graph.add_node(
+        "seed-page",
+        node_type="page",
+        global_page_id="seed-page",
+        sheet_number="A-601",
+    )
+    for index in range(100):
+        missing_id = f"unresolved_sheet::A-{700 + index}"
+        graph.add_node(
+            missing_id,
+            node_type="unresolved_reference",
+            sheet_number=f"A-{700 + index}",
+        )
+        graph.add_edge(
+            "seed-page",
+            missing_id,
+            label=f"A-{700 + index}",
+            ref_type="unresolved_sheet",
+            context="Exterior wall geometry reference",
+        )
+
+    trees, gaps, coverage = _build_seed_reference_trees(
+        graph=graph,
+        seed_nodes=["seed-page"],
+        available_seed_count=1,
+        tree_nodes=[
+            {
+                "node_id": "seed-page",
+                "global_page_id": "seed-page",
+                "sheet_id": "A-601",
+                "sheet_title": "Wall Types",
+                "role": "seed_page",
+                "foam_specific_evidence": ["Spray foam at exterior wall type W3"],
+            }
+        ],
+        selection_rows=[
+            {
+                "page_id": "seed-page",
+                "packet_page": 1,
+                "selection_tier": "seed_page",
+            }
+        ],
+        reference_depth=1,
+    )
+
+    assert len(trees) == 1
+    assert len(trees[0]["missing_references"]) == 9
+    assert trees[0]["missing_references"][-1]["omitted_reference_count"] == 92
+    assert len(gaps) <= 24
+    assert coverage["truncated"] is True
+    assert len(json.dumps({"reference_trees": trees, "scope_gaps": gaps})) < 25_000
 
 
 def test_measurement_context_rejects_unknown_confirmed_page(tmp_path) -> None:
