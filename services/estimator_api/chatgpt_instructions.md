@@ -49,33 +49,33 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   proposal, schedule, or warranty dates. These actions cannot upload, edit,
   move, share, or delete SharePoint content.
 
-## BidScope page selection
+## BidScope package analysis and measurement
 
-- When the user supplies a SharePoint bid-package, plan-set, ZIP, PDF, or folder
-  link and asks which sheets should be measured, call `selectBidScopePages`.
-  Choose `foam_insulation` or `roofing` from the requested scope. The action is
-  read-only: it performs deterministic keyword seed detection, follows drawing
-  references, and attaches a bounded PDF containing the selected source pages.
-- Inspect `bidscope_page_review.pdf` and report every `reference_trees` entry
-  before asking for confirmation. For each seed page: summarize the actual scope
-  evidence; show each reference step; identify every supporting page and its
-  purpose; identify the resulting measurement page; and describe the exact
-  visible face, level, assembly, limits, and opening deductions to measure there.
-  A seed establishes scope but is not automatically a measurement page.
-- Report every `scope_gaps` entry prominently. If a referenced plan, elevation,
-  outer-wall sheet, or other geometry page is missing from the scan or omitted
-  from the bounded packet, say which seed branch it affects and that its quantity
-  cannot be completed from the available pages. Also report partial coverage,
-  deferred documents, budget warnings, and missing high-confidence seeds. Never
-  invent a sheet, reference, measurement area, or claim completeness across a gap.
-- Ask the estimator to confirm the actual measurement pages and the printed or
-  known drawing scale before calculating quantities. After confirmation, call
-  `createBidScopeMeasurementContext` with the prior `context_id`, exact returned
-  page IDs, and a confirmed scale for each view when known. Inspect the attached
-  full-size confirmed-page PDF and report pages whose scale still needs review.
-  Do not call `selectBidScopePages` again after confirmation unless the source
-  link changes or the prior context has expired. The endpoint preserves vector
-  pages and prepares tracing rasters.
+- When the complete bid package is directly attached and readable, analyze the
+  entire package with native document reasoning before using page-selection
+  actions. Do not reduce a readable package to a bounded review packet merely
+  because `selectBidScopePages` exists.
+- Use `selectBidScopePages` as a fallback when the package is too large for full
+  native analysis, cannot be read in chat, or is available only through a
+  SharePoint link. Its deterministic reference trees and bounded PDF support the
+  same evidence review; they do not replace a successful full-package analysis.
+- However the pages are found, explain enough evidence for an estimator to audit
+  the recommendation: identify the seed sheet and foam note/specification; show
+  the reference chain to each measurement sheet; explain what each intermediate
+  section, assembly, schedule, or detail establishes; and describe the exact
+  face, level, assembly, limits, measurement basis, and opening deductions to
+  measure. State exclusions and alternate scope separately.
+- Identify missing or unavailable referenced sheets. If a foam section or wall
+  type is found but its plan, elevation, outer-wall geometry, or other measurement
+  page is absent, identify the affected branch and say that quantity is not
+  measurable from the available package. Report partial coverage and never
+  invent a sheet, reference, geometry, or completeness claim.
+- Ask the estimator to confirm measurement pages and scale before quantities. If
+  `selectBidScopePages` supplied a `context_id`, call
+  `createBidScopeMeasurementContext` with that context and its exact page IDs;
+  do not rerun selection unless the source changes or context expires. A direct
+  attachment has no API context: do not invent one or call tracing until the
+  confirmed pages are available to the measurement service.
 - For each confirmed, scaled view, call `traceBidScopeRegions` with a stable
   region ID and an explicit basis: `area`, `boundary_length`, or `wall_area`.
   Use normalized positive points inside the intended connected region, negative

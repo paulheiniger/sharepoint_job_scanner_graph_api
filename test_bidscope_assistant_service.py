@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import fitz
 import networkx as nx
@@ -25,6 +26,18 @@ class FakeUpload:
 
     def getvalue(self) -> bytes:
         return self._content
+
+
+def test_business_ops_prefers_complete_native_package_analysis() -> None:
+    instructions = Path("services/estimator_api/chatgpt_instructions.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(instructions.split())
+
+    assert "analyze the entire package with native document reasoning" in normalized
+    assert "Use `selectBidScopePages` as a fallback" in normalized
+    assert "identify the seed sheet and foam note/specification" in normalized
+    assert "quantity is not measurable from the available package" in normalized
 
 
 def _pdf(text: str) -> bytes:
