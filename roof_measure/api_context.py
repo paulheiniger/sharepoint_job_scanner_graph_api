@@ -267,18 +267,21 @@ def calculate_roof_measurement(
     artifact_dir: Path,
     sam2_candidate_id: str = "",
     mapbox_token: str = "",
+    normalized_sections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    normalized_sections = list(normalized_sections or [])
     source_count = sum(
         (
             bool(selected_footprint_ids),
             bool(sections),
+            bool(normalized_sections),
             bool(sam2_candidate_id),
         )
     )
     if source_count != 1:
         raise RoofMeasureInputError(
-            "Provide exactly one of selected_footprint_ids, custom sections, "
-            "or sam2_candidate_id."
+            "Provide exactly one of selected_footprint_ids, pixel sections, "
+            "normalized sections, or sam2_candidate_id."
         )
     context = load_roof_measure_context(
         context_id=context_id,
@@ -287,13 +290,23 @@ def calculate_roof_measurement(
     width = int(context["image_width"])
     height = int(context["image_height"])
     pixels_per_foot = float(context["pixels_per_foot"])
+    assistant_sections = bool(normalized_sections)
+    effective_sections = (
+        _normalized_sections_to_pixels(
+            normalized_sections,
+            width=width,
+            height=height,
+        )
+        if assistant_sections
+        else list(sections)
+    )
     candidate_by_id = {
         str(candidate["footprint_id"]): candidate
         for candidate in context.get("footprint_candidates") or []
     }
 
     measurement_sections: list[dict[str, Any]] = []
-    overlay_sections = list(sections)
+    overlay_sections = list(effective_sections)
     overlay_footprint_ids = list(selected_footprint_ids)
     overlay_context = context
     overlay_source_image: Image.Image | None = None
@@ -348,11 +361,14 @@ def calculate_roof_measurement(
                 )
             )
     else:
-        for section in sections:
+        _validate_nonoverlapping_sections(effective_sections)
+        for section in effective_sections:
             measurement_sections.append(
                 _measure_components(
                     section_id=str(section["section_id"]),
-                    source="custom_polygon",
+                    source=(
+                        "assistant_polygon" if assistant_sections else "custom_polygon"
+                    ),
                     components=[
                         {
                             "polygon": section["polygon"],
@@ -375,7 +391,7 @@ def calculate_roof_measurement(
                         "polygon": section["polygon"],
                         "holes": section.get("holes") or [],
                     }
-                    for section in sections
+                    for section in effective_sections
                 ],
                 mapbox_token=mapbox_token,
             )
@@ -387,7 +403,7 @@ def calculate_roof_measurement(
                         "holes": component.get("holes") or [],
                     }
                     for section, component in zip(
-                        sections,
+                        effective_sections,
                         fitted_view.components,
                         strict=True,
                     )
@@ -416,9 +432,15 @@ def calculate_roof_measurement(
             "prompts. Verify every edge, overhang, canopy, penetration, courtyard, "
             "and excluded area before quoting."
             if sam2_candidate_id
-            else "Building footprints are evidence, not a surveyed roof boundary. "
-            "Verify roof edges, overhangs, canopies, penetrations, and excluded "
-            "areas before quoting."
+            else (
+                "The Assistant visually traced this roof boundary on the context "
+                "image. Verify every edge, overhang, canopy, penetration, courtyard, "
+                "and excluded area before quoting."
+                if assistant_sections
+                else "Building footprints are evidence, not a surveyed roof boundary. "
+                "Verify roof edges, overhangs, canopies, penetrations, and excluded "
+                "areas before quoting."
+            )
         )
     ]
     assumptions = [
@@ -427,7 +449,12 @@ def calculate_roof_measurement(
             "SAM2 refined the estimator-selected footprint evidence; no OpenAI API "
             "call was used."
             if sam2_candidate_id
-            else "No AI model, SAM2 service, or OpenAI call was used by the API."
+            else (
+                "The API deterministically validated and measured normalized polygons "
+                "drawn by the conversational Assistant; the API called no AI service."
+                if assistant_sections
+                else "No AI model, SAM2 service, or OpenAI call was used by the API."
+            )
         ),
     ]
     if pitch_rise_per_12 is None:
@@ -477,7 +504,11 @@ def calculate_roof_measurement(
         "measurement_basis": (
             "sam2_refined_address_calibrated_satellite_plan_view"
             if sam2_candidate_id
-            else "address_calibrated_satellite_plan_view"
+            else (
+                "assistant_traced_address_calibrated_satellite_plan_view"
+                if assistant_sections
+                else "address_calibrated_satellite_plan_view"
+            )
         ),
         "source_view": source_view,
         "source_zoom": round(source_zoom, 2),
@@ -682,6 +713,58 @@ def _measure_components(
         "perimeter_ft": round(perimeter, 1),
         "surface_area_sqft": round(surface, 1) if surface is not None else None,
     }
+
+
+def _normalized_sections_to_pixels(
+    sections: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    def convert_ring(points: list[dict[str, Any]]) -> list[dict[str, float]]:
+        return [
+            {
+                "x": round(float(point["x"]) * width, 3),
+                "y": round(float(point["y"]) * height, 3),
+            }
+            for point in points
+        ]
+
+    return [
+        {
+            "section_id": str(section["section_id"]),
+            "polygon": convert_ring(section.get("polygon") or []),
+            "holes": [
+                convert_ring(hole) for hole in section.get("holes") or []
+            ],
+        }
+        for section in sections
+    ]
+
+
+def _validate_nonoverlapping_sections(sections: list[dict[str, Any]]) -> None:
+    """Reject invalid or overlapping additive sections before they can double count."""
+    try:
+        from shapely.geometry import Polygon
+    except ImportError:
+        return
+
+    geometries: list[tuple[str, Any]] = []
+    for section in sections:
+        section_id = str(section.get("section_id") or "unnamed")
+        polygon = _ring_tuples(section.get("polygon") or [])
+        holes = [_ring_tuples(hole) for hole in section.get("holes") or []]
+        geometry = Polygon(polygon, holes=holes)
+        if not geometry.is_valid or geometry.area <= 1:
+            raise RoofMeasureInputError(
+                f"Section {section_id} has invalid or self-intersecting geometry."
+            )
+        for prior_id, prior in geometries:
+            if geometry.intersection(prior).area > 1:
+                raise RoofMeasureInputError(
+                    f"Sections {prior_id} and {section_id} overlap and would double-count area."
+                )
+        geometries.append((section_id, geometry))
 
 
 def _component_totals(components: list[dict[str, Any]]) -> tuple[float, float]:

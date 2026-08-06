@@ -10,6 +10,7 @@ import pytest
 
 from roof_measure.api_context import (
     RoofMeasureContextExpiredError,
+    RoofMeasureInputError,
     calculate_roof_measurement,
     create_roof_measure_context,
     load_roof_measure_context,
@@ -706,6 +707,70 @@ def test_calculate_accepts_custom_polygon_and_does_not_invent_surface_area(
     assert result["total_plan_area_sqft"] == 100.0
     assert result["total_surface_area_sqft"] is None
     assert "plan-view area" in result["warnings"][-1]
+
+
+def test_calculate_accepts_assistant_normalized_polygons(roof_context) -> None:
+    artifact_dir, context = roof_context
+
+    result = calculate_roof_measurement(
+        context_id=context["context_id"],
+        selected_footprint_ids=[],
+        sections=[],
+        normalized_sections=[
+            {
+                "section_id": "assistant-main-roof",
+                "polygon": [
+                    {"x": 0.1, "y": 0.1},
+                    {"x": 0.3, "y": 0.1},
+                    {"x": 0.3, "y": 0.3},
+                    {"x": 0.1, "y": 0.3},
+                ],
+                "holes": [],
+            }
+        ],
+        pitch_rise_per_12=None,
+        artifact_dir=artifact_dir,
+    )
+
+    assert result["total_plan_area_sqft"] == 100.0
+    assert result["sections"][0]["source"] == "assistant_polygon"
+    assert result["measurement_basis"].startswith("assistant_traced_")
+    assert "Assistant visually traced" in result["warnings"][0]
+
+
+def test_calculate_rejects_overlapping_assistant_sections(roof_context) -> None:
+    artifact_dir, context = roof_context
+
+    with pytest.raises(RoofMeasureInputError, match="overlap"):
+        calculate_roof_measurement(
+            context_id=context["context_id"],
+            selected_footprint_ids=[],
+            sections=[],
+            normalized_sections=[
+                {
+                    "section_id": "first",
+                    "polygon": [
+                        {"x": 0.1, "y": 0.1},
+                        {"x": 0.4, "y": 0.1},
+                        {"x": 0.4, "y": 0.4},
+                        {"x": 0.1, "y": 0.4},
+                    ],
+                    "holes": [],
+                },
+                {
+                    "section_id": "second",
+                    "polygon": [
+                        {"x": 0.3, "y": 0.3},
+                        {"x": 0.6, "y": 0.3},
+                        {"x": 0.6, "y": 0.6},
+                        {"x": 0.3, "y": 0.6},
+                    ],
+                    "holes": [],
+                },
+            ],
+            pitch_rise_per_12=None,
+            artifact_dir=artifact_dir,
+        )
 
 
 def test_calculate_refits_final_overlay_to_custom_boundary(

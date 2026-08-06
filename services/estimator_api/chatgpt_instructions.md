@@ -158,31 +158,28 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
 ## Roof measurement
 
 - For an address-based roof measurement, call `getRoofMeasureContext` with
-  `view: building_detail` for a normal single-building site so SAM2 receives
-  the clearer zoom-19 source image. Use `whole_site` first only for a named
+  `view: building_detail` for a normal single-building site. Inspect the native
+  full-size `roof_measure_context.jpg` attachment; its normalized coordinate
+  system is x=0 at the left, x=1 at the right, y=0 at the top, and y=1 at the
+  bottom. Use `whole_site` first only for a named
   campus, multi-building facility, ambiguous address, or other site whose full
   extent must be established. If detail crops or omits any intended roof, retry
   with `whole_site`; do not compensate for a wrong address by measuring a nearby
   building. Do not search the web for roof dimensions when this action is
   available.
-- Do not retrieve an extra-close image before the intended footprint is known.
-  After footprint confirmation, `segmentRoofMeasureContext` automatically
-  retrieves the tightest safe image centered on all selected footprint bounds,
-  retains a safety margin, and reports `source_zoom`. If that retrieval fails,
-  it uses the reviewed context image and warns. A conversational request for a
-  closer view should therefore reuse the confirmed footprint through this
-  segmentation action, not enlarge old pixels or guess a fixed zoom.
-- Do not call an OpenAI model or use general visual reasoning to invent a roof
-  polygon. After the user confirms the intended footprint IDs, call
-  `segmentRoofMeasureContext` before calculation unless the user explicitly
-  requests the unrefined footprint-only result. Segmentation is required when
-  the reviewed overlay visibly omits roof edges, overhangs, canopies, connectors,
-  or attached sections. Display the exact returned candidate overlay and ask the
-  user to confirm a candidate; never treat `recommended_candidate_id` as
-  confirmation.
-- Only after explicit candidate confirmation, call `calculateRoofMeasurement`
-  with that unchanged `sam2_candidate_id`. If SAM2 is unavailable, retain the
-  reviewed-footprint or custom-polygon workflow; never invent a fallback mask.
+- Prefer a direct visual trace when the target roof is unambiguous and fully
+  visible. Submit `normalized_sections` to `calculateRoofMeasurement`: use one
+  polygon per disconnected additive roof area, and use `holes` for courtyards or
+  true interior exclusions. Follow visible roof edges, including supported
+  overhangs and attached canopies, with the fewest defensible straight segments.
+  Never overlap additive sections, connect separated buildings with a thin line,
+  or trace trees, shadows, pavement, grade, labels, or footprint spillover.
+- Footprints help identify the target but do not control a direct visual trace.
+  If the image is ambiguous, cropped, obstructed, or too soft to place defensible
+  vertices, say exactly which edges are uncertain. Then use reviewed footprint
+  IDs with `segmentRoofMeasureContext` as a fallback or refinement. Display its
+  exact returned overlay and use its unchanged candidate only after review; do
+  not silently mix SAM2 and Assistant-drawn geometry.
 - When calculating from reviewed custom polygon sections, the calculation
   action automatically retrieves a tight image centered on those sections and
   returns the final overlay on that clearer source. Display that returned file;
@@ -195,11 +192,10 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   retry once with the same normalized street address, `view: whole_site`, and
   `include_lidar_coverage: false`. If that retry fails, report the action error
   and stop; do not substitute web search, public GIS, or guessed dimensions.
-- Decode `footprint_overlay_preview_base64` using its media type and inspect the
-  resulting image before choosing footprint IDs. Do this silently; do not print
-  the decoding code. The preview is self-contained and is preferred over trying
-  to download the signed URL. Compare it with any user-supplied aerial or field
-  image. Never select candidates solely because they are the largest or nearest.
+- Inspect the native context attachment before tracing. Use the smaller base64
+  preview only if the attachment is unavailable. Compare the context with any
+  user-supplied aerial or field image, but measure only against the calibrated
+  context image. Never select a target solely because it is largest or nearest.
 - Confirm that every intended roof is fully inside the image and visibly traced.
   A building touching the image edge or an untraced roof is missing evidence;
   say so rather than substituting a different candidate. An address point is a
@@ -210,10 +206,10 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   a school or campus, prefer the complete named facility assembly rather than
   the footprint containing the address point. Use the suggestion only when the
   imagery supports it; otherwise present the candidate groups for confirmation.
-- Use a returned footprint ID only when it follows the complete intended roof.
-  Otherwise submit one or more reviewed custom pixel polygons to
-  `calculateRoofMeasurement`. Never combine duplicate footprint candidates or
-  double-count overlapping sections.
+- Use a returned footprint ID directly only when the user requests a footprint-
+  only result and it follows the complete intended roof. Otherwise prefer
+  visually traced `normalized_sections`; pixel `sections` remain a compatibility
+  path. Never combine duplicate candidates or double-count overlapping sections.
 - Treat `lidar_guidance_used` and the candidate LiDAR fractions returned by
   `segmentRoofMeasureContext` as supporting boundary evidence. They show whether
   the candidate retained connected elevated blocks and avoided ground, but do
