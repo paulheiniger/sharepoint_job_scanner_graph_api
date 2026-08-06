@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import networkx as nx
+
 from indexing.progressive_pipeline import (
     ProgressiveBudgets,
     candidate_priority,
@@ -158,6 +160,13 @@ def build_bidscope_review_packet_from_inspection(
         for row in selection_rows
         if row["selection_tier"] in {"supporting_reference", "connected_context"}
     ]
+    reference_trees, scope_gaps = _build_seed_reference_trees(
+        graph=result.get("graph"),
+        seed_nodes=list(result.get("seed_nodes") or []),
+        tree_nodes=tree_nodes,
+        selection_rows=selection_rows,
+        reference_depth=reference_depth,
+    )
     scan = dict(result.get("scan_completeness") or {})
     warnings = list(result.get("warnings") or [])
     if deferred_count:
@@ -180,6 +189,8 @@ def build_bidscope_review_packet_from_inspection(
         document_by_id=document_by_id,
         source_sharepoint_url=sharepoint_url,
         trade_type=str(result.get("trade_type") or trade_type),
+        reference_trees=reference_trees,
+        scope_gaps=scope_gaps,
         artifact_dir=artifact_dir or _default_artifact_dir(),
         ttl_seconds=ttl_seconds,
     )
@@ -192,16 +203,19 @@ def build_bidscope_review_packet_from_inspection(
         "trade_name": str(result.get("trade_name") or trade_type.replace("_", " ").title()),
         "selection_method": "deterministic keyword seeds plus bid-document reference graph expansion",
         "assistant_review_instruction": (
-            "Inspect the attached pages in packet order. Identify which pages contain the actual measurable plans or elevations, "
-            "explain the path from scope seed to each selected measurement page, and ask the estimator to confirm the pages and "
-            "drawing scale before any segmentation or quantity calculation. Preserve this context_id and the exact returned page_id "
-            "for every recommended page. After confirmation, call createBidScopeMeasurementContext with this same context_id; do not "
-            "run selectBidScopePages again unless the source link changes or this context expires."
+            "Before asking for page confirmation, report every reference_trees entry separately. For each seed: summarize its scope "
+            "evidence; show every resolved reference step to a measurement target; inspect the attached target and describe the exact "
+            "area, face, level, assembly, and deductions to measure; identify each supporting page's purpose; and state every scope_gap. "
+            "If a referenced plan or elevation is missing from the scan or omitted from this packet, say that the related quantity is "
+            "not measurable from the available packet. Then ask the estimator to confirm exact page IDs and drawing scales. Preserve "
+            "this context_id and do not run selectBidScopePages again unless the source link changes or this context expires."
         ),
         "packet_page_count": len(review_pages),
         "seed_pages": seed_rows,
         "measurement_candidates": measurement_rows,
         "supporting_reference_pages": support_rows,
+        "reference_trees": reference_trees,
+        "scope_gaps": scope_gaps,
         "source_links": source_links,
         "coverage": {
             **scan,
@@ -216,6 +230,8 @@ def build_bidscope_review_packet_from_inspection(
             "measurement_context_available_after_review": True,
             "segmentation_status": "not_run",
             "scale_required": True,
+            "evidence_review_required": True,
+            "scope_gap_count": len(scope_gaps),
             "note": (
                 "Confirm page IDs and drawing scales, then create a measurement context from this same selection context. "
                 "Do not refresh page selection after confirmation. No segmentation or quantity calculation has run."
@@ -371,6 +387,8 @@ def create_bidscope_measurement_context(
         "expires_at": expires_at,
         "trade_type": str(selection.get("trade_type") or ""),
         "source_sharepoint_url": str(selection.get("source_sharepoint_url") or ""),
+        "reference_trees": list(selection.get("reference_trees") or []),
+        "scope_gaps": list(selection.get("scope_gaps") or []),
         "pages": page_rows,
         "packet_asset_name": packet_name,
     }
@@ -383,6 +401,8 @@ def create_bidscope_measurement_context(
         "trade_type": context_payload["trade_type"],
         "confirmed_page_count": len(page_rows),
         "pages": page_rows,
+        "reference_trees": context_payload["reference_trees"],
+        "scope_gaps": context_payload["scope_gaps"],
         "measurement_readiness": {
             "status": "ready_for_tracing" if ready_pages == len(page_rows) else "requires_scale_confirmation",
             "pages_ready_for_tracing": ready_pages,
@@ -417,6 +437,8 @@ def _persist_selection_context(
     document_by_id: dict[str, dict[str, Any]],
     source_sharepoint_url: str,
     trade_type: str,
+    reference_trees: list[dict[str, Any]],
+    scope_gaps: list[dict[str, Any]],
     artifact_dir: Path,
     ttl_seconds: int,
 ) -> dict[str, Any]:
@@ -467,6 +489,8 @@ def _persist_selection_context(
             "expires_at": expires_at,
             "trade_type": trade_type,
             "source_sharepoint_url": source_sharepoint_url,
+            "reference_trees": reference_trees,
+            "scope_gaps": scope_gaps,
             "pages": rows,
         }
         _write_json_atomic(context_path / "context.json", payload)
@@ -778,6 +802,252 @@ def _fallback_review_nodes(pages: list[Any], *, max_packet_pages: int) -> list[d
         }
         for page in ranked[:max_packet_pages]
     ]
+
+
+def _build_seed_reference_trees(
+    *,
+    graph: nx.DiGraph | None,
+    seed_nodes: list[str],
+    tree_nodes: list[dict[str, Any]],
+    selection_rows: list[dict[str, Any]],
+    reference_depth: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if graph is None:
+        return [], []
+    tree_by_id = {
+        str(node.get("node_id") or node.get("global_page_id") or ""): node
+        for node in tree_nodes
+    }
+    packet_by_page_id = {
+        str(row.get("page_id") or ""): int(row.get("packet_page") or 0)
+        for row in selection_rows
+    }
+    measurement_nodes = [
+        node_id
+        for node_id, node in tree_by_id.items()
+        if str(node.get("role") or "") == "measurement_page"
+    ]
+    undirected = graph.to_undirected()
+    reference_trees: list[dict[str, Any]] = []
+    scope_gaps: list[dict[str, Any]] = []
+
+    for seed_id in seed_nodes[:20]:
+        if seed_id not in graph:
+            continue
+        seed = tree_by_id.get(seed_id) or dict(graph.nodes.get(seed_id, {}))
+        seed_page_id = str(seed.get("global_page_id") or seed_id)
+        seed_sheet_id = _graph_node_label(graph, seed_id)
+        evidence = list(
+            seed.get("foam_specific_evidence")
+            or seed.get("evidence")
+            or []
+        )[:12]
+        targets: list[dict[str, Any]] = []
+        supporting_by_id: dict[str, dict[str, Any]] = {}
+        for target_id in measurement_nodes:
+            if target_id not in undirected:
+                continue
+            try:
+                path = nx.shortest_path(undirected, seed_id, target_id)
+            except nx.NetworkXNoPath:
+                continue
+            if len(path) - 1 > reference_depth:
+                continue
+            target = tree_by_id[target_id]
+            target_page_id = str(target.get("global_page_id") or target_id)
+            steps = _reference_steps(graph, path)
+            for support_id in path[1:-1]:
+                support = tree_by_id.get(support_id)
+                if support is None:
+                    continue
+                support_page_id = str(support.get("global_page_id") or support_id)
+                supporting_by_id.setdefault(
+                    support_page_id,
+                    {
+                        "page_id": support_page_id,
+                        "sheet_id": _graph_node_label(graph, support_id),
+                        "sheet_title": str(support.get("sheet_title") or ""),
+                        "role": str(support.get("role") or ""),
+                        "packet_page": packet_by_page_id.get(support_page_id),
+                        "purpose": str(support.get("measurement_guidance") or ""),
+                    },
+                )
+            target_row = {
+                "page_id": target_page_id,
+                "sheet_id": _graph_node_label(graph, target_id),
+                "sheet_title": str(target.get("sheet_title") or ""),
+                "page_type": str(target.get("page_type") or ""),
+                "packet_page": packet_by_page_id.get(target_page_id),
+                "in_review_packet": target_page_id in packet_by_page_id,
+                "reference_path": [_graph_node_label(graph, node_id) for node_id in path],
+                "reference_steps": steps,
+                "measurement_guidance": str(target.get("measurement_guidance") or ""),
+                "assistant_area_description_required": True,
+            }
+            targets.append(target_row)
+            if target_page_id not in packet_by_page_id:
+                scope_gaps.append(
+                    {
+                        "seed_page_id": seed_page_id,
+                        "seed_sheet_id": seed_sheet_id,
+                        "gap_type": "measurement_page_omitted_from_review_packet",
+                        "missing_sheet_id": target_row["sheet_id"],
+                        "from_sheet_id": steps[-1]["from_sheet_id"] if steps else seed_sheet_id,
+                        "reference_context": steps[-1]["reference_context"] if steps else "",
+                        "impact": (
+                            "A measurement page was resolved in the scanned package but is not attached in the bounded review packet. "
+                            "Do not measure this branch until that page is retrieved."
+                        ),
+                    }
+                )
+
+        targets.sort(
+            key=lambda row: (
+                not bool(row["in_review_packet"]),
+                len(row["reference_path"]),
+                str(row["sheet_id"]),
+            )
+        )
+        missing_references = _unresolved_references_for_seed(
+            graph,
+            seed_id=seed_id,
+            seed_page_id=seed_page_id,
+            seed_sheet_id=seed_sheet_id,
+            reference_depth=reference_depth,
+        )
+        scope_gaps.extend(missing_references)
+        seed_gaps = [
+            gap for gap in scope_gaps if gap.get("seed_page_id") == seed_page_id
+        ]
+        if not targets:
+            no_target_gap = {
+                "seed_page_id": seed_page_id,
+                "seed_sheet_id": seed_sheet_id,
+                "gap_type": "no_measurement_page_resolved_from_seed",
+                "missing_sheet_id": "",
+                "from_sheet_id": seed_sheet_id,
+                "reference_context": "",
+                "impact": (
+                    "Foam scope evidence was found, but no dimensioned plan or elevation was resolved from this seed. "
+                    "Do not claim a complete quantity for this scope branch."
+                ),
+            }
+            scope_gaps.append(no_target_gap)
+            seed_gaps.append(no_target_gap)
+        status = (
+            "missing_referenced_geometry"
+            if seed_gaps
+            else "ready_for_visual_measurement_review"
+        )
+        evidence_summary = (
+            f"{seed_sheet_id} scope evidence: " + "; ".join(str(item) for item in evidence)
+            if evidence
+            else f"{seed_sheet_id} was classified as a high-confidence scope seed; visually verify its scope note."
+        )
+        reference_trees.append(
+            {
+                "seed_page_id": seed_page_id,
+                "seed_sheet_id": seed_sheet_id,
+                "seed_sheet_title": str(seed.get("sheet_title") or ""),
+                "packet_page": packet_by_page_id.get(seed_page_id),
+                "scope_evidence": evidence,
+                "scope_evidence_summary": evidence_summary,
+                "measurement_targets": targets[:12],
+                "supporting_pages": list(supporting_by_id.values())[:20],
+                "missing_references": missing_references[:20],
+                "status": status,
+                "assistant_review_requirement": (
+                    "Explain what the seed establishes, follow each reference step, and describe the exact visible area to measure on "
+                    "every attached target. State missing or omitted geometry before requesting confirmation."
+                ),
+            }
+        )
+    return reference_trees, scope_gaps[:100]
+
+
+def _unresolved_references_for_seed(
+    graph: nx.DiGraph,
+    *,
+    seed_id: str,
+    seed_page_id: str,
+    seed_sheet_id: str,
+    reference_depth: int,
+) -> list[dict[str, Any]]:
+    undirected = graph.to_undirected()
+    lengths = nx.single_source_shortest_path_length(
+        undirected,
+        seed_id,
+        cutoff=reference_depth,
+    )
+    gaps: list[dict[str, Any]] = []
+    for missing_id, distance in lengths.items():
+        missing = graph.nodes.get(missing_id, {})
+        if str(missing.get("node_type") or "") != "unresolved_reference":
+            continue
+        path = nx.shortest_path(undirected, seed_id, missing_id)
+        source_id = path[-2] if len(path) > 1 else seed_id
+        edge = _edge_data_in_path_direction(graph, source_id, missing_id)
+        gaps.append(
+            {
+                "seed_page_id": seed_page_id,
+                "seed_sheet_id": seed_sheet_id,
+                "gap_type": "referenced_sheet_missing_from_scanned_package",
+                "missing_sheet_id": _graph_node_label(graph, missing_id),
+                "from_sheet_id": _graph_node_label(graph, source_id),
+                "reference_label": str(edge.get("label") or ""),
+                "reference_type": str(edge.get("ref_type") or ""),
+                "reference_context": str(edge.get("context") or ""),
+                "reference_path": [_graph_node_label(graph, node_id) for node_id in path],
+                "graph_distance": int(distance),
+                "impact": (
+                    "The scope branch references a sheet that was not resolved in the scanned package. "
+                    "If it contains the outer wall, plan, or elevation geometry, that area is not measurable from this packet."
+                ),
+            }
+        )
+    return sorted(gaps, key=lambda row: (int(row["graph_distance"]), str(row["missing_sheet_id"])))
+
+
+def _reference_steps(graph: nx.DiGraph, path: list[str]) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    for from_id, to_id in zip(path, path[1:]):
+        forward = graph.has_edge(from_id, to_id)
+        edge = _edge_data_in_path_direction(graph, from_id, to_id)
+        steps.append(
+            {
+                "from_page_id": str(graph.nodes.get(from_id, {}).get("global_page_id") or from_id),
+                "from_sheet_id": _graph_node_label(graph, from_id),
+                "to_page_id": str(graph.nodes.get(to_id, {}).get("global_page_id") or to_id),
+                "to_sheet_id": _graph_node_label(graph, to_id),
+                "reference_label": str(edge.get("label") or ""),
+                "reference_type": str(edge.get("ref_type") or ""),
+                "reference_context": str(edge.get("context") or ""),
+                "traversal": "reference_direction" if forward else "reverse_reference_direction",
+            }
+        )
+    return steps
+
+
+def _edge_data_in_path_direction(
+    graph: nx.DiGraph,
+    from_id: str,
+    to_id: str,
+) -> dict[str, Any]:
+    if graph.has_edge(from_id, to_id):
+        return dict(graph.get_edge_data(from_id, to_id) or {})
+    return dict(graph.get_edge_data(to_id, from_id) or {})
+
+
+def _graph_node_label(graph: nx.DiGraph, node_id: str) -> str:
+    node = graph.nodes.get(node_id, {})
+    return str(
+        node.get("sheet_number")
+        or node.get("sheet_id")
+        or node.get("label")
+        or node.get("sheet_title")
+        or node.get("document_name")
+        or node_id
+    )
 
 
 def _selection_row(node: dict[str, Any], *, packet_index: int) -> dict[str, Any]:

@@ -70,7 +70,19 @@ def test_bidscope_packet_contains_seed_and_reference_linked_measurement_page(tmp
     assert any(row["sheet_id"] == "A-601" for row in result["seed_pages"])
     assert any(row["sheet_id"] == "A-101" for row in result["measurement_candidates"])
     assert any(row["reference_path"] for row in result["measurement_candidates"])
+    seed_tree = next(
+        tree for tree in result["reference_trees"] if tree["seed_sheet_id"] == "A-601"
+    )
+    target = next(
+        row for row in seed_tree["measurement_targets"] if row["sheet_id"] == "A-101"
+    )
+    assert target["reference_path"] == ["A-601", "A-301", "A-101"]
+    assert len(target["reference_steps"]) == 2
+    assert target["assistant_area_description_required"] is True
+    assert seed_tree["status"] == "ready_for_visual_measurement_review"
+    assert result["scope_gaps"] == []
     assert result["measurement_readiness"]["status"] == "requires_confirmed_pages_and_scale"
+    assert result["measurement_readiness"]["evidence_review_required"] is True
     assert result["measurement_readiness"]["segmentation_status"] == "not_run"
     assert "do not run selectBidScopePages again" in result["assistant_review_instruction"]
     assert len(result["context_id"]) == 32
@@ -136,6 +148,8 @@ def test_confirmed_pages_create_scaled_vector_and_raster_measurement_context(tmp
     assert calibration["pdf_points_per_foot"] == 9.0
     assert calibration["rendered_pixels_per_foot"] == 18.0
     assert confirmed["measurement_readiness"]["status"] == "ready_for_tracing"
+    assert confirmed["reference_trees"] == selection["reference_trees"]
+    assert confirmed["scope_gaps"] == selection["scope_gaps"]
     context_path = tmp_path / confirmed["measurement_context_id"]
     assert (context_path / confirmed["pages"][0]["source_pdf_asset_name"]).is_file()
     assert (context_path / confirmed["pages"][0]["rendered_image_asset_name"]).is_file()
@@ -145,6 +159,54 @@ def test_confirmed_pages_create_scaled_vector_and_raster_measurement_context(tmp
         assert packet.page_count == 1
     finally:
         packet.close()
+
+
+def test_bidscope_seed_tree_reports_missing_referenced_measurement_sheet(tmp_path) -> None:
+    source_url = "https://spraytec.sharepoint.com/sites/Data/Shared%20Documents/Test"
+    inspection = inspect_uploaded_package(
+        [
+            FakeUpload(
+                "A-601 Wall Types.pdf",
+                _pdf(
+                    "A-601 Wall Types\nWall Type W3 requires spray foam insulation. "
+                    "See exterior elevation A-999 for wall geometry."
+                ),
+            )
+        ]
+    )
+    inspection = replace(
+        inspection,
+        candidates=[
+            replace(candidate, source_sharepoint_url=source_url)
+            for candidate in inspection.candidates
+        ],
+    )
+
+    result = build_bidscope_review_packet_from_inspection(
+        inspection,
+        sharepoint_url=source_url,
+        max_scan_pages=25,
+        max_packet_pages=3,
+        artifact_dir=tmp_path,
+    )
+
+    seed_tree = next(
+        tree for tree in result["reference_trees"] if tree["seed_sheet_id"] == "A-601"
+    )
+    missing = next(
+        gap
+        for gap in seed_tree["missing_references"]
+        if gap["missing_sheet_id"] == "A-999"
+    )
+    assert missing["gap_type"] == "referenced_sheet_missing_from_scanned_package"
+    assert "not measurable" in missing["impact"]
+    assert seed_tree["measurement_targets"] == []
+    assert seed_tree["status"] == "missing_referenced_geometry"
+    assert any(
+        gap["gap_type"] == "no_measurement_page_resolved_from_seed"
+        for gap in result["scope_gaps"]
+    )
+    assert result["measurement_readiness"]["scope_gap_count"] >= 2
 
 
 def test_measurement_context_rejects_unknown_confirmed_page(tmp_path) -> None:

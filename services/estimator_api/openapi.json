@@ -118,10 +118,28 @@
             "title": "Pages",
             "type": "array"
           },
+          "reference_trees": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 20,
+            "title": "Reference Trees",
+            "type": "array"
+          },
           "schema_version": {
             "const": "spraytec.bidscope_measurement_context.v1",
             "title": "Schema Version",
             "type": "string"
+          },
+          "scope_gaps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 100,
+            "title": "Scope Gaps",
+            "type": "array"
           },
           "source_context_id": {
             "title": "Source Context Id",
@@ -321,10 +339,30 @@
             "title": "Packet Page Count",
             "type": "integer"
           },
+          "reference_trees": {
+            "description": "One evidence tree per scope seed, including resolved reference steps, measurement targets, supporting pages, and gaps.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 20,
+            "title": "Reference Trees",
+            "type": "array"
+          },
           "schema_version": {
             "const": "spraytec.bidscope_page_selection.v1",
             "title": "Schema Version",
             "type": "string"
+          },
+          "scope_gaps": {
+            "description": "Missing referenced sheets, measurement pages omitted from the bounded packet, and seeds without resolved geometry.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 100,
+            "title": "Scope Gaps",
+            "type": "array"
           },
           "seed_pages": {
             "items": {

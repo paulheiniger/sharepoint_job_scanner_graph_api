@@ -56,15 +56,18 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   Choose `foam_insulation` or `roofing` from the requested scope. The action is
   read-only: it performs deterministic keyword seed detection, follows drawing
   references, and attaches a bounded PDF containing the selected source pages.
-- Inspect the returned `bidscope_page_review.pdf` directly and use its packet
-  page order together with `seed_pages`, `measurement_candidates`, and
-  `supporting_reference_pages`. A seed page establishes scope but is not
-  automatically a measurement page. Explain the reference path that supports
-  every page recommended for measurement.
-- Report `coverage.selection_is_partial`, deferred documents, budget warnings,
-  unresolved references, and missing high-confidence seeds. A bounded packet is
-  not proof that no other relevant sheet exists. Do not invent sheets or cite a
-  page that was not returned.
+- Inspect `bidscope_page_review.pdf` and report every `reference_trees` entry
+  before asking for confirmation. For each seed page: summarize the actual scope
+  evidence; show each reference step; identify every supporting page and its
+  purpose; identify the resulting measurement page; and describe the exact
+  visible face, level, assembly, limits, and opening deductions to measure there.
+  A seed establishes scope but is not automatically a measurement page.
+- Report every `scope_gaps` entry prominently. If a referenced plan, elevation,
+  outer-wall sheet, or other geometry page is missing from the scan or omitted
+  from the bounded packet, say which seed branch it affects and that its quantity
+  cannot be completed from the available pages. Also report partial coverage,
+  deferred documents, budget warnings, and missing high-confidence seeds. Never
+  invent a sheet, reference, measurement area, or claim completeness across a gap.
 - Ask the estimator to confirm the actual measurement pages and the printed or
   known drawing scale before calculating quantities. After confirmation, call
   `createBidScopeMeasurementContext` with the prior `context_id`, exact returned

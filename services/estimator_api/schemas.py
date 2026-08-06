@@ -1285,6 +1285,20 @@ class BidScopePageSelectionResponse(BaseModel):
     seed_pages: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     measurement_candidates: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     supporting_reference_pages: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    reference_trees: list[dict[str, Any]] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "One evidence tree per scope seed, including resolved reference steps, measurement targets, supporting pages, and gaps."
+        ),
+    )
+    scope_gaps: list[dict[str, Any]] = Field(
+        default_factory=list,
+        max_length=100,
+        description=(
+            "Missing referenced sheets, measurement pages omitted from the bounded packet, and seeds without resolved geometry."
+        ),
+    )
     source_links: list[BidScopeSourceLink] = Field(default_factory=list, max_length=20)
     coverage: dict[str, Any] = Field(default_factory=dict)
     measurement_readiness: dict[str, Any] = Field(default_factory=dict)
@@ -1359,6 +1373,8 @@ class BidScopeMeasurementContextResponse(BaseModel):
     trade_type: Literal["foam_insulation", "roofing"]
     confirmed_page_count: int = Field(ge=1, le=20)
     pages: list[dict[str, Any]] = Field(min_length=1, max_length=20)
+    reference_trees: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    scope_gaps: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
     measurement_readiness: dict[str, Any]
     warnings: list[str] = Field(default_factory=list)
     openai_file_response: list[OpenAIActionFile] = Field(
