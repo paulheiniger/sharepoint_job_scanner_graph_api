@@ -552,6 +552,87 @@ class OpenAIActionFile(BaseModel):
     content: str = Field(description="Base64-encoded file content.")
 
 
+class RoofMeasureTargetCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    footprint_id: str
+    label: str
+    provider: str
+    plan_area_sqft: float
+    perimeter_ft: float
+
+
+class RoofMeasureTargetContextResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["spraytec.roof_measure_target_context.v1"]
+    context_id: str
+    expires_at: int
+    address: str
+    site_name: str = ""
+    site_type: str = ""
+    footprint_candidates: list[RoofMeasureTargetCandidate] = Field(
+        default_factory=list,
+        max_length=12,
+    )
+    candidate_groups: list[RoofMeasureCandidateGroup] = Field(default_factory=list)
+    recommended_candidate_group_id: str = ""
+    site_resolution_reason: str = ""
+    openai_file_response: list[OpenAIActionFile] = Field(
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        description="Full-size footprint overlay used only to choose image focus.",
+        min_length=1,
+        max_length=1,
+    )
+    attributions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RoofMeasureFocusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    selected_footprint_ids: list[
+        Annotated[str, Field(min_length=1, max_length=100)]
+    ] = Field(min_length=1, max_length=12)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "RoofMeasureFocusRequest":
+        if len(set(self.selected_footprint_ids)) != len(self.selected_footprint_ids):
+            raise ValueError("selected_footprint_ids must be unique.")
+        return self
+
+
+class RoofMeasureVisualContextResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["spraytec.roof_measure_visual_context.v1"]
+    context_id: str
+    source_context_id: str
+    expires_at: int
+    address: str
+    site_name: str = ""
+    site_type: str = ""
+    latitude: float
+    longitude: float
+    zoom: float
+    image_width: int
+    image_height: int
+    pixels_per_foot: float
+    satellite_image_url: str
+    trace_instruction: str
+    openai_file_response: list[OpenAIActionFile] = Field(
+        serialization_alias="openaiFileResponse",
+        validation_alias="openaiFileResponse",
+        description="Clean full-size satellite image for independent visual tracing.",
+        min_length=1,
+        max_length=1,
+    )
+    attributions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class RoofMeasureSegmentationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

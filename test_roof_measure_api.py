@@ -13,6 +13,7 @@ from roof_measure.api_context import (
     RoofMeasureInputError,
     calculate_roof_measurement,
     create_roof_measure_context,
+    focus_roof_measure_context,
     load_roof_measure_context,
     resolve_roof_measure_asset,
 )
@@ -198,6 +199,47 @@ def test_segmentation_view_fits_and_recenters_selected_footprint(
         assert restored_point["x"] == pytest.approx(original_point["x"])
         assert restored_point["y"] == pytest.approx(original_point["y"])
     assert "footprint-fitted" in warning
+
+
+def test_focus_context_uses_footprint_only_for_camera_bounds(
+    roof_context,
+    monkeypatch,
+) -> None:
+    artifact_dir, context = roof_context
+
+    class FakeDetailProvider:
+        def __init__(self, _token: str):
+            pass
+
+        def static_satellite_image_at(self, **kwargs) -> MapboxStaticImage:
+            return MapboxStaticImage(
+                ok=True,
+                image_bytes=_png_bytes(),
+                latitude=float(kwargs["latitude"]),
+                longitude=float(kwargs["longitude"]),
+                zoom=float(kwargs["zoom"]),
+                pixels_per_foot=6.8,
+            )
+
+    monkeypatch.setattr(
+        "roof_measure.api_segmentation.MapboxReferenceProvider",
+        FakeDetailProvider,
+    )
+    focused = focus_roof_measure_context(
+        context_id=context["context_id"],
+        selected_footprint_ids=["fp-01"],
+        artifact_dir=artifact_dir,
+        mapbox_token="mapbox-test-token",
+    )
+
+    assert focused["context_id"] != context["context_id"]
+    assert focused["focus_source_context_id"] == context["context_id"]
+    assert focused["focus_footprint_ids"] == ["fp-01"]
+    assert focused["zoom"] > context["zoom"]
+    assert focused["pixels_per_foot"] == 6.8
+    assert focused["footprint_candidates"] == []
+    assert focused["candidate_groups"] == []
+    assert (artifact_dir / focused["context_id"] / "satellite.png").is_file()
 
 
 def test_sam2_uses_fitted_source_then_preserves_context_coordinates(

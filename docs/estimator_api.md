@@ -11,6 +11,20 @@ Semantic validation and SharePoint delivery remain deferred.
 
 ## Roof measurement operations
 
+The Custom GPT uses a three-step visual workflow:
+
+1. `POST /v1/roof-measure/target-context` returns a labeled footprint overlay
+   and IDs without any polygon coordinates. Footprints are used only to choose
+   the camera bounds.
+2. `POST /v1/roof-measure/focus` retrieves a new clean image centered on the
+   selected bounds and returns a new calibrated context ID without footprint
+   geometry.
+3. `POST /v1/roof-measure/calculate` measures normalized polygons independently
+   traced on that focused image.
+
+The broader service retains the original context and SAM2 operations for the
+dashboard and internal workflows, but they are excluded from the GPT contract.
+
 ### `POST /v1/roof-measure/context`
 
 Accepts a site address and returns a short-lived, model-neutral evidence

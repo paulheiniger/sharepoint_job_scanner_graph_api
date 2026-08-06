@@ -344,6 +344,131 @@ def test_roof_measure_context_is_authenticated_and_returns_signed_images(
     assert tampered.status_code == 403
 
 
+def test_roof_target_context_omits_footprint_coordinates(monkeypatch, tmp_path) -> None:
+    context_id = "e" * 32
+    image_path = tmp_path / "footprint-overlay.png"
+    image_path.write_bytes(b"image")
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        "services.estimator_api.server.create_roof_measure_context",
+        lambda **_kwargs: {
+            "schema_version": "spraytec.roof_measure_context.v1",
+            "context_id": context_id,
+            "expires_at": 9_999_999_999,
+            "address": "620 Boone Avenue, Winchester, KY",
+            "site_name": "Clark County RDC",
+            "site_type": "school",
+            "footprint_candidates": [
+                {
+                    "footprint_id": "fp-01",
+                    "label": "Main building",
+                    "provider": "test",
+                    "plan_area_sqft": 144_174.2,
+                    "perimeter_ft": 3_343.7,
+                    "components": [
+                        {
+                            "polygon": [
+                                {"x": 1, "y": 1},
+                                {"x": 2, "y": 1},
+                                {"x": 2, "y": 2},
+                            ],
+                            "holes": [],
+                        }
+                    ],
+                }
+            ],
+            "candidate_groups": [
+                {
+                    "group_id": "group-01",
+                    "label": "Main facility",
+                    "footprint_ids": ["fp-01"],
+                    "building_count": 1,
+                    "plan_area_sqft": 144_174.2,
+                    "perimeter_ft": 3_343.7,
+                    "distance_from_address_point_ft": 0,
+                }
+            ],
+            "recommended_candidate_group_id": "group-01",
+            "site_resolution_reason": "Visible facility group.",
+            "attributions": ["Test imagery."],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.resolve_roof_measure_asset",
+        lambda **_kwargs: image_path,
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server._roof_overlay_file_base64",
+        lambda _path: "target-image",
+    )
+
+    response = client.post(
+        "/v1/roof-measure/target-context",
+        json={"address": "620 Boone Avenue, Winchester, KY"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    candidate = response.json()["footprint_candidates"][0]
+    assert candidate["footprint_id"] == "fp-01"
+    assert "components" not in candidate
+    assert "polygon" not in json.dumps(response.json())
+
+
+def test_roof_focus_returns_new_clean_context(monkeypatch, tmp_path) -> None:
+    source_context_id = "d" * 32
+    focused_context_id = "c" * 32
+    image_path = tmp_path / "satellite.png"
+    image_path.write_bytes(b"image")
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        "services.estimator_api.server.focus_roof_measure_context",
+        lambda **_kwargs: {
+            "schema_version": "spraytec.roof_measure_visual_context.v1",
+            "context_id": focused_context_id,
+            "expires_at": 9_999_999_999,
+            "address": "620 Boone Avenue, Winchester, KY",
+            "site_name": "Clark County RDC",
+            "site_type": "school",
+            "latitude": 38.0,
+            "longitude": -84.0,
+            "zoom": 19.75,
+            "image_width": 1280,
+            "image_height": 1280,
+            "pixels_per_foot": 4.25,
+            "attributions": ["Test imagery."],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.resolve_roof_measure_asset",
+        lambda **_kwargs: image_path,
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server._roof_overlay_file_base64",
+        lambda _path: "focused-image",
+    )
+
+    response = client.post(
+        "/v1/roof-measure/focus",
+        json={
+            "context_id": source_context_id,
+            "selected_footprint_ids": ["fp-01"],
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["context_id"] == focused_context_id
+    assert body["source_context_id"] == source_context_id
+    assert body["zoom"] == 19.75
+    assert body["openaiFileResponse"][0]["content"] == "focused-image"
+    assert "footprint_candidates" not in body
+    assert "selected_footprint_ids" not in body
+
+
 def test_roof_measure_calculation_returns_review_required_contract(monkeypatch) -> None:
     selected_overlay = Path("/tmp/selected-footprints-test.png")
     monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
@@ -975,6 +1100,8 @@ def test_openapi_exposes_expected_operations() -> None:
         "getJobContext",
         "getEstimatorContext",
         "getRoofMeasureContext",
+        "getRoofMeasureTargetContext",
+        "focusRoofMeasureContext",
         "segmentRoofMeasureContext",
         "calculateRoofMeasurement",
         "generateEstimateWorkbook",
@@ -1111,9 +1238,13 @@ def test_action_openapi_marks_read_only_posts_nonconsequential() -> None:
     assert spec["paths"]["/v1/estimating/context"]["post"][
         "x-openai-isConsequential"
     ] is False
-    assert spec["paths"]["/v1/roof-measure/context"]["post"][
+    assert spec["paths"]["/v1/roof-measure/target-context"]["post"][
         "x-openai-isConsequential"
     ] is False
+    assert spec["paths"]["/v1/roof-measure/focus"]["post"][
+        "x-openai-isConsequential"
+    ] is False
+    assert "/v1/roof-measure/context" not in spec["paths"]
     assert spec["paths"]["/v1/roof-measure/calculate"]["post"][
         "x-openai-isConsequential"
     ] is False
@@ -1555,6 +1686,9 @@ def test_action_openapi_forces_assistant_visual_roof_trace() -> None:
     ]["$ref"]
 
     assert "/v1/roof-measure/segment" not in specification["paths"]
+    assert "/v1/roof-measure/context" not in specification["paths"]
+    assert "/v1/roof-measure/target-context" in specification["paths"]
+    assert "/v1/roof-measure/focus" in specification["paths"]
     assert request_ref.endswith("/RoofMeasureAssistantCalculationRequest")
     request_schema = schemas["RoofMeasureAssistantCalculationRequest"]
     assert set(request_schema["properties"]) == {
@@ -1564,6 +1698,8 @@ def test_action_openapi_forces_assistant_visual_roof_trace() -> None:
     }
     assert request_schema["required"] == ["context_id", "normalized_sections"]
     assert "RoofMeasureCalculationRequest" not in schemas
+    assert "RoofMeasureContextResponse" not in schemas
+    assert "RoofMeasureFootprintCandidate" not in schemas
 
 
 def test_bidscope_page_selection_route_returns_native_review_packet(monkeypatch) -> None:
