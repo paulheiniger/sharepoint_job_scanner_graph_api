@@ -623,6 +623,68 @@ def test_job_tracking_budget_health_uses_source_job_ids_for_estimate_costs(monke
     assert foam["actual_cost"] > 0
 
 
+def test_job_tracking_rollup_derives_estimated_foam_strokes_from_pounds() -> None:
+    import dashboard.app as app
+
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "FOAM-CONVERSION-JOB",
+                "project": "Foam Conversion Job",
+                "actual_foam_strokes": 1200,
+                "estimated_foam_lbs": 1000,
+            }
+        ]
+    )
+
+    rolled = app.rollup_job_tracking_production_summary(summary)
+
+    assert rolled.iloc[0]["estimated_foam_strokes"] == 1600
+    assert rolled.iloc[0]["foam_strokes_variance"] == -400
+    assert {
+        "field": "estimated_foam_strokes",
+        "source_field": "estimated_foam_lbs",
+        "formula": "pounds / 0.625 lb/stroke",
+    } in rolled.iloc[0]["foam_quantity_derivations"]
+
+
+def test_job_tracking_budget_health_pairs_actual_strokes_with_estimated_pounds(monkeypatch) -> None:
+    import dashboard.app as app
+
+    summary = pd.DataFrame(
+        [
+            {
+                "job_id": "FOAM-CONVERSION-JOB",
+                "project": "Foam Conversion Job",
+                "actual_foam_strokes": 1200,
+                "estimated_foam_lbs": 1000,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        app,
+        "load_job_tracking_estimate_budget_enrichment",
+        lambda job_ids: pd.DataFrame(
+            [
+                {
+                    "job_id": "FOAM-CONVERSION-JOB",
+                    "budget_bucket": "Foam / SPF",
+                    "estimated_bucket_cost": 16000,
+                    "estimate_budget_rows_used": 1,
+                }
+            ]
+        ),
+    )
+
+    _budget_jobs, budget_buckets = app.build_job_tracking_budget_health(summary)
+
+    foam = budget_buckets[budget_buckets["bucket"].eq("Foam / SPF")].iloc[0]
+    assert foam["actual_quantity"] == 1200
+    assert foam["estimated_quantity"] == 1600
+    assert foam["quantity_unit"] == "strokes"
+    assert foam["quantity_pct_used"] == 0.75
+
+
 def test_job_tracking_budget_health_does_not_price_mixed_foam_units(monkeypatch) -> None:
     import dashboard.app as app
 

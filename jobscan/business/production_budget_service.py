@@ -220,7 +220,7 @@ def get_production_budget_health(
                 if requested_variants & set(_job_id_variants(job_id))
             }
         rolled_tracking = {
-            job_id: _with_derived_foam_quantities(_rollup_tracking_rows(rows))
+            job_id: with_derived_foam_quantities(_rollup_tracking_rows(rows))
             for job_id, rows in valid_groups.items()
         }
         labor_rates = _estimate_derived_labor_rates(
@@ -541,7 +541,7 @@ def _rollup_tracking_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return rolled
 
 
-def _with_derived_foam_quantities(row: Mapping[str, Any]) -> dict[str, Any]:
+def with_derived_foam_quantities(row: Mapping[str, Any]) -> dict[str, Any]:
     """Fill only missing foam units for like-for-like business comparisons."""
 
     result = dict(row)

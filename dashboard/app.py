@@ -47,6 +47,7 @@ from jobscan.estimate_routing import (
     is_insulation_quote,
     strip_negated_insulation_scope,
 )
+from jobscan.business.production_budget_service import with_derived_foam_quantities
 
 load_project_env()
 
@@ -3922,7 +3923,7 @@ def rollup_job_tracking_production_summary(df: pd.DataFrame) -> pd.DataFrame:
             row["estimated_value"] = first_positive_value(group["estimated_value"])
         rows.append(row)
 
-    rolled = pd.DataFrame(rows)
+    rolled = pd.DataFrame(with_derived_foam_quantities(row) for row in rows)
     if rolled.empty:
         return rolled
     if "actual_total_hours" not in rolled.columns or rolled["actual_total_hours"].isna().all():
@@ -17889,6 +17890,10 @@ def job_tracking_dashboard_page() -> None:
             )
 
     elif section == "Foam / Materials":
+        st.caption(
+            "When an estimate provides foam pounds but not strokes, estimated strokes are derived "
+            "at 0.625 lb per stroke (estimated pounds ÷ 0.625)."
+        )
         enriched_summary = enrich_job_tracking_summary_with_estimated_materials(summary)
         material_summary = rollup_job_tracking_production_summary(enriched_summary)
         roofing_summary, insulation_summary = split_tracking_material_rows(material_summary)
