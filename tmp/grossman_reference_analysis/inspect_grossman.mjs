@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { FileBlob, SpreadsheetFile } from "@oai/artifact-tool";
 
 const inputPath = "/Users/paulheiniger/Downloads/Estimate + Spec - Grossman Tuning AWM (1).xlsx";
-const outputDir = "/Users/paulheiniger/Downloads/sharepoint_job_scanner_graph_api/tmp/grossman_reference_analysis/rendered";
+const outputDir = fileURLToPath(new URL("./rendered", import.meta.url));
 
 const input = await FileBlob.load(inputPath);
 const workbook = await SpreadsheetFile.importXlsx(input);

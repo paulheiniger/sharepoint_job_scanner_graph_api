@@ -6,7 +6,7 @@ model checkpoints out of the Streamlit app process.
 ## Run Locally
 
 ```bash
-cd /Users/paulheiniger/Downloads/sharepoint_job_scanner_graph_api
+cd /Users/paulheiniger/Downloads/spraytec-ai-platform
 
 python3 -m venv .venv-sam2
 source .venv-sam2/bin/activate

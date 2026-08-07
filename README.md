@@ -1,6 +1,8 @@
-# SharePoint Job Folder Scanner
+# Spray-Tec AI Platform
 
-A Python starter project for scanning roofing job folders directly from SharePoint using Microsoft Graph, extracting estimate/invoice/status metadata, and producing a dashboard-ready job index.
+Spray-Tec's operational AI platform for SharePoint ingestion, document intelligence,
+estimating, reporting, workflow automation, accounting context, and assistant APIs.
+The original SharePoint job scanner remains one of the platform's ingestion layers.
 
 The local scanner still works, but the primary path is now:
 
@@ -390,7 +392,7 @@ backlog, and estimate-rate production-budget observations used by historical
 chart datasets.
 
 ```bash
-cd /Users/paulheiniger/Downloads/sharepoint_job_scanner_graph_api
+cd /Users/paulheiniger/Downloads/spraytec-ai-platform
 ./scripts/daily_refresh.sh
 ```
 
@@ -1331,7 +1333,7 @@ Estimator limitations:
 Run the full Spray-Tec operations dashboard:
 
 ```bash
-cd /Users/paulheiniger/Downloads/sharepoint_job_scanner_graph_api
+cd /Users/paulheiniger/Downloads/spraytec-ai-platform
 source .venv/bin/activate
 streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
 ```

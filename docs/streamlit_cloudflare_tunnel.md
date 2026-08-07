@@ -38,13 +38,13 @@ In Cloudflare Zero Trust:
 The established checkout is:
 
 ```text
-/Users/pheiniger/spray-tec/sharepoint_job_scanner_graph_api
+/Users/pheiniger/spray-tec/spraytec-ai-platform
 ```
 
 Pull the repository and install `cloudflared`:
 
 ```bash
-cd /Users/pheiniger/spray-tec/sharepoint_job_scanner_graph_api
+cd /Users/pheiniger/spray-tec/spraytec-ai-platform
 git pull
 brew install cloudflared
 mkdir -p /Users/pheiniger/.cloudflared
@@ -64,7 +64,7 @@ Install or replace the existing Streamlit launch agent and install the tunnel
 launch agent:
 
 ```bash
-cd /Users/pheiniger/spray-tec/sharepoint_job_scanner_graph_api
+cd /Users/pheiniger/spray-tec/spraytec-ai-platform
 scripts/install_macos_streamlit_tunnel_services.sh
 ```
 

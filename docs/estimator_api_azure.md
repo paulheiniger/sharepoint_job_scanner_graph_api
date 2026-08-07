@@ -30,6 +30,10 @@ an immutable image tagged with the commit SHA, smoke-tests it, pushes it to ACR,
 updates the Container App, and waits for a healthy revision. No Azure client
 secret is stored in GitHub.
 
+The Entra application's `github-main` federated credential must trust
+`repo:paulheiniger/spraytec-ai-platform:ref:refs/heads/main`. Update that subject
+whenever the GitHub repository owner or name changes or Azure sign-in will fail.
+
 Use the manual workflow dispatch for an intentional redeploy without a code
 change. The commands below remain available as a break-glass deployment path.
 
