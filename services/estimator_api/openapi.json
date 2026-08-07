@@ -7765,7 +7765,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.27.0"
+    "version": "0.27.1"
   },
   "openapi": "3.1.0",
   "paths": {

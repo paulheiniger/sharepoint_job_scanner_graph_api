@@ -72,6 +72,7 @@ def test_service_root_supports_deployment_connectivity_checks() -> None:
         "version": app.version,
         "health": "/health",
         "privacy": "/privacy",
+        "terms": "/terms",
         "openapi": "/openapi.json",
         "action_openapi": "/openapi-actions.json",
     }
@@ -100,6 +101,20 @@ def test_privacy_policy_is_public_html_and_excluded_from_openapi(monkeypatch) ->
     assert "info@spray-tec.com" in response.text
     assert client.head("/privacy").status_code == 200
     assert "/privacy" not in client.get("/openapi.json").json()["paths"]
+
+
+def test_terms_of_use_is_public_html_and_excluded_from_openapi(monkeypatch) -> None:
+    monkeypatch.setenv("ESTIMATOR_API_KEY", "test-secret")
+
+    response = client.get("/terms")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Spray-Tec Business Assistant Terms of Use" in response.text
+    assert "QuickBooks integration is read-only" in response.text
+    assert 'href="/privacy"' in response.text
+    assert client.head("/terms").status_code == 200
+    assert "/terms" not in client.get("/openapi.json").json()["paths"]
 
 
 def test_context_requires_input() -> None:

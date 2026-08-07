@@ -178,7 +178,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.27.0",
+    version="0.27.1",
     servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
@@ -224,6 +224,57 @@ PRIVACY_POLICY_HTML = """<!doctype html>
 
   <h2>Contact</h2>
   <p>Spray-Tec, Inc.<br>
+     1132 Equity Street, Shelbyville, KY 40065<br>
+     <a href="mailto:info@spray-tec.com">info@spray-tec.com</a><br>
+     <a href="tel:+15026335499">502-633-5499</a></p>
+</main>
+</body>
+</html>
+"""
+
+
+TERMS_OF_USE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spray-Tec Business Assistant Terms of Use</title>
+  <style>
+    body { font-family: system-ui, sans-serif; line-height: 1.55; margin: 0; color: #17202a; background: #f6f8fa; }
+    main { max-width: 760px; margin: 3rem auto; padding: 2rem; background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+    h1, h2 { line-height: 1.2; }
+    h2 { margin-top: 1.8rem; }
+    a { color: #0957a5; }
+    .updated { color: #5f6b76; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Spray-Tec Business Assistant Terms of Use</h1>
+  <p class="updated"><strong>Effective and last updated:</strong> August 7, 2026</p>
+  <p>These terms govern use of the Spray-Tec Business Assistant and its supporting API (the “Service”), operated by Spray-Tec, Inc. The Service is a private business tool for authorized Spray-Tec personnel and approved representatives.</p>
+
+  <h2>Authorized use</h2>
+  <p>Users may access the Service only for legitimate Spray-Tec business purposes and only through accounts, workspaces, and systems they are authorized to use. Users must not attempt to bypass access controls, access another organization’s data, disrupt the Service, or use it for unlawful or deceptive activity. Access may be limited or revoked when needed to protect Spray-Tec, its customers, or connected systems.</p>
+
+  <h2>Human review required</h2>
+  <p>The Service assists with document retrieval, operational reporting, estimating, measurements, draft workbooks, and accounting context. Its responses and generated files may be incomplete or incorrect and are not final bids, contracts, invoices, accounting records, engineering conclusions, or professional advice. An authorized Spray-Tec employee must verify source documents, quantities, pricing, scope, customer information, and other material outputs before relying on them or sharing them externally.</p>
+
+  <h2>QuickBooks connection</h2>
+  <p>The initial QuickBooks integration is read-only. It synchronizes authorized company, customer, estimate, invoice, payment, and credit-memo information for internal reporting and customer context. It does not process charges, access payroll, or automatically create, edit, or delete QuickBooks accounting records. A QuickBooks company administrator controls authorization and may disconnect or reconnect the Service.</p>
+
+  <h2>Data and connected services</h2>
+  <p>The Service relies on third-party systems such as OpenAI, Microsoft Azure, Microsoft Graph and SharePoint, Intuit QuickBooks, and mapping or imagery providers. Availability may be affected by those services, network conditions, permissions, subscriptions, or source-data quality. Information handling is described in the <a href="/privacy">Spray-Tec Business Assistant Privacy Policy</a>.</p>
+
+  <h2>Security and sensitive information</h2>
+  <p>Users must protect their credentials and promptly report suspected unauthorized access. Payment-card details, Social Security numbers, passwords, health information, and other unnecessary sensitive personal information must not be submitted to the Service.</p>
+
+  <h2>Availability and responsibility</h2>
+  <p>The Service is provided for internal operational assistance and may be changed, suspended, or discontinued. To the extent permitted by law, Spray-Tec does not guarantee that the Service will be uninterrupted or error-free. Users remain responsible for reviewing outputs and following Spray-Tec’s established approval, estimating, accounting, safety, and records-management procedures.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about these terms may be directed to:<br>
+     Spray-Tec, Inc.<br>
      1132 Equity Street, Shelbyville, KY 40065<br>
      <a href="mailto:info@spray-tec.com">info@spray-tec.com</a><br>
      <a href="tel:+15026335499">502-633-5499</a></p>
@@ -337,6 +388,7 @@ def service_root() -> dict[str, Any]:
         "version": app.version,
         "health": "/health",
         "privacy": "/privacy",
+        "terms": "/terms",
         "openapi": "/openapi.json",
         "action_openapi": "/openapi-actions.json",
     }
@@ -364,6 +416,17 @@ def action_openapi() -> FileResponse:
 def privacy_policy() -> HTMLResponse:
     """Return the public privacy policy required by shared GPT Actions."""
     return HTMLResponse(PRIVACY_POLICY_HTML)
+
+
+@app.api_route(
+    "/terms",
+    methods=["GET", "HEAD"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def terms_of_use() -> HTMLResponse:
+    """Return the public terms required for the private accounting integration."""
+    return HTMLResponse(TERMS_OF_USE_HTML)
 
 
 @app.get("/health")
