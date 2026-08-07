@@ -1,16 +1,97 @@
 # Spray-Tec AI Platform
 
-Spray-Tec's operational AI platform for SharePoint ingestion, document intelligence,
-estimating, reporting, workflow automation, accounting context, and assistant APIs.
-The original SharePoint job scanner remains one of the platform's ingestion layers.
+Spray-Tec's operational AI platform turns company documents and operating data
+into evidence-backed estimating, reporting, scheduling, warranty, accounting,
+and assistant workflows. The original SharePoint job scanner remains a core
+ingestion layer, but it is no longer the whole application.
 
-The local scanner still works, but the primary path is now:
+## Current platform shape
 
 ```text
-Microsoft Graph → SharePoint job folder cache → extractor → job index → SharePoint List / dashboard
+SharePoint + bid packages + QuickBooks
+                 |
+                 v
+Incremental ingestion and deterministic extraction
+                 |
+                 v
+PostgreSQL / Neon operational and knowledge layers
+                 |
+       +---------+----------+
+       |                    |
+       v                    v
+Streamlit operations     Azure Business API
+dashboard               + Spray-Tec Assistant
+       |                    |
+       +---------+----------+
+                 v
+Estimator-reviewed workbooks, measurements, reports, and follow-up actions
 ```
 
-## What it extracts
+The platform currently includes:
+
+- **Incremental SharePoint ingestion:** Microsoft Graph delta synchronization,
+  stable identifier storage, document extraction, job indexing, and bounded
+  repair/reconciliation workflows.
+- **Operations dashboard:** sales, job board, scheduling, daily dispatch,
+  production, job tracking, warranties, pricing, estimating, BidScope, AI roof
+  measure, source lineage, and administration/health views.
+- **Spray-Tec Business API:** Azure-hosted, action-safe endpoints for estimating
+  evidence, jobs, SharePoint documents, sales, operations, warranties,
+  accounting context, chart datasets, BidScope, and roof measurement.
+- **Estimating intelligence:** evidence-backed scope interpretation, historical
+  decisions, product/pricing guidance, estimator review, default workbook
+  delivery, assistant-edited workbook validation, and confirmation-gated draft
+  generation. Excel remains the trusted calculation engine.
+- **BidScope:** whole-package page discovery, seed evidence and reference trees,
+  missing-page flags, measurement-page preparation, and gross-region/opening
+  deduction tracing for estimator review.
+- **Roof measurement:** calibrated satellite context, building-footprint
+  evidence, optional local SAM2 refinement, reviewed polygons, and deterministic
+  plan-area/perimeter calculations.
+- **Warranty registry:** a deduplicated master of issued and historically
+  reported warranties with terms, dates, contacts, job matches, and source
+  provenance.
+- **QuickBooks Online:** a read-only accounting projection for customers,
+  estimates, invoices, payments, and credit memos. OAuth administration and
+  synchronization are kept outside the Assistant action schema.
+
+## Operating model
+
+- SharePoint remains the source document system; PostgreSQL/Neon stores resolved
+  identities, operational state, normalized evidence, and reporting datasets.
+- `scripts/daily_refresh.sh` is the normal incremental refresh path. Full scans,
+  historical backfills, and identifier repair remain explicit operations.
+- The Streamlit dashboard and SAM2 service run on the office Mac Studio. The
+  dashboard is published through Cloudflare Access/Tunnel; SAM2 stays private.
+- The Business API runs in Azure Container Apps. Changes to its build inputs on
+  `main` deploy through GitHub Actions using Entra OIDC.
+- Assistant retrieval and accounting operations are read-only. Draft estimate
+  workbooks require explicit confirmation and estimator review.
+
+## Repository map
+
+| Path | Responsibility |
+| --- | --- |
+| `jobscan/` | SharePoint synchronization, extraction, business services, estimating knowledge, QuickBooks synchronization |
+| `dashboard/` | Streamlit operations and estimating dashboard |
+| `services/estimator_api/` | Azure Business API and GPT-safe OpenAPI contract |
+| `takeoff/`, `roof_measure/` | Deterministic takeoff and roof-measure geometry |
+| `services/roof_sam2/`, `sam2/` | Optional private SAM2 segmentation service and model code |
+| `db/` | Operational schema, refresh SQL, dashboard views, and Power BI marts |
+| `scripts/` | Daily refresh, deployment helpers, backfills, and maintenance commands |
+| `evals/`, `test_*.py` | Estimator, takeoff, API, data-quality, and regression evaluation |
+| `docs/` | Focused architecture, deployment, integration, and operator runbooks |
+
+Key runbooks:
+
+- [`docs/estimator_api_azure.md`](docs/estimator_api_azure.md) — Azure deployment and authentication
+- [`docs/chatgpt_estimator_action.md`](docs/chatgpt_estimator_action.md) — Assistant actions and behavior
+- [`docs/streamlit_cloudflare_tunnel.md`](docs/streamlit_cloudflare_tunnel.md) — secure dashboard hosting
+- [`docs/quickbooks_integration.md`](docs/quickbooks_integration.md) — read-only QuickBooks authorization and sync
+- [`docs/estimating_assistant_executive_architecture.md`](docs/estimating_assistant_executive_architecture.md) — estimating knowledge architecture
+- [`docs/powerbi_marts.md`](docs/powerbi_marts.md) — analytical marts and refresh order
+
+## SharePoint job evidence
 
 For each job folder, the scanner detects:
 
@@ -392,7 +473,7 @@ backlog, and estimate-rate production-budget observations used by historical
 chart datasets.
 
 ```bash
-cd /Users/paulheiniger/Downloads/spraytec-ai-platform
+cd /Users/paulheiniger/spraytec-ai-platform
 ./scripts/daily_refresh.sh
 ```
 
@@ -1333,7 +1414,7 @@ Estimator limitations:
 Run the full Spray-Tec operations dashboard:
 
 ```bash
-cd /Users/paulheiniger/Downloads/spraytec-ai-platform
+cd /Users/paulheiniger/spraytec-ai-platform
 source .venv/bin/activate
 streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
 ```
@@ -1346,7 +1427,7 @@ the office firewall.
 
 The root `app.py` entrypoint is a small SharePoint scanner prototype and is not the normal operational application. The dashboard entrypoint includes the operations, estimating, FoamScope, BidScope, and AI Roof Measure workflows.
 
-## BidScope AI prototype
+## BidScope AI
 
 BidScope AI is a Streamlit page for construction plan/spec PDFs and ZIP bid packages. It identifies trade scope evidence, extracts sheet references, builds a directed reference graph, and produces an estimator-reviewed measurement tree. The current trade profiles are `Foam Insulation` and `Roofing`.
 
@@ -1376,20 +1457,37 @@ What it does:
 - Roofing guidance focuses on roof areas from roof plans, edge/perimeter/coping/flashing from plans/details/elevations, and counts for drains, curbs, and penetrations.
 - Export the measurement tree as JSON and relevant sheets as CSV.
 
-BidScope AI does not calculate a final bid. It produces a measurement map for estimator review. No paid API key is required. TODO markers in the code show where an LLM could later summarize evidence or resolve ambiguous sheet relationships.
+BidScope does not calculate a final bid. Its deterministic services build the
+page graph, prepare review imagery, validate geometry, and calculate traced
+regions. The Assistant interprets the evidence and proposes what to trace;
+estimators remain responsible for confirming scope, scale, deductions, and
+missing-page assumptions.
 
-## Recommended rollout
+## Current operating priorities
 
-1. Run on 10-20 real job folders.
-2. Review extracted fields and warning rates.
-3. Add alternate extractor profiles if older estimate templates differ.
-4. Write the job index to SharePoint List or SQL.
-5. Let Zapier handle Teams notifications first.
-6. Add QuickBooks writes only after human-reviewed accuracy is solid.
+1. Complete the one-time QuickBooks authorization with the Spray-Tec company
+   administrator, verify the initial synchronization, and only then enable its
+   incremental daily-refresh step.
+2. Continue estimator review of workbook drafts, BidScope traces, and roof
+   boundaries; capture corrections as reusable decision evidence.
+3. Expand data-quality coverage for older or nonstandard estimate workbooks
+   without weakening deterministic validation for known templates.
+4. Keep Mac Studio services, Azure health, incremental refresh status, and
+   source freshness visible through the Admin / Health page.
 
-## Current limitations
+## Guardrails and current limitations
 
-- Excel extraction assumes the estimate workbook contains an `Estimate` sheet with labels like `Job Name:`, `Job Type:`, `Total Job Cost`, and `Work Sheet Price`.
-- Invoice number and amount are parsed from invoice filenames first. PDF OCR/text extraction can be added later.
-- The Graph sync currently mirrors files into a local cache, then runs the same scanner. This is intentional: it keeps the extractor testable and avoids brittle direct workbook reads through API calls.
-- SharePoint permissions must be approved by a Microsoft 365 admin.
+- Every estimate, takeoff, workbook, warranty match, and operational
+  recommendation requires human review before quoting or external use.
+- Excel templates remain authoritative for estimate formulas and pricing
+  calculations; Python and AI should not silently replace workbook logic.
+- BidScope can identify and trace available measurement sheets, but unresolved
+  references and missing sheets are reported as scope gaps rather than invented.
+- Roof footprints and SAM2 masks are evidence, not automatic final roof edges.
+  Final measurement polygons require estimator verification.
+- Assistant SharePoint search covers indexed documents and deliberate on-demand
+  fetches; it is not an unrestricted tenant-wide browser.
+- QuickBooks access is intentionally read-only and excludes payroll, banking,
+  vendors, bills, journal entries, and payment-card data.
+- SharePoint application permissions and any future write scopes require
+  Microsoft 365 administrator approval and least-privilege review.
