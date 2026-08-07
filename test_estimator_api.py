@@ -1062,6 +1062,7 @@ def test_openapi_exposes_expected_operations() -> None:
             "fetchSharePointDocument",
             "selectBidScopePages",
             "createBidScopeMeasurementContext",
+            "prepareBidScopeAttachmentContext",
             "prepareBidScopeMeasurementContext",
             "traceBidScopeRegions",
                 "health_health_get",
@@ -1809,6 +1810,120 @@ def test_bidscope_prepare_measurement_context_action_is_read_only_in_openapi() -
 
     assert operation["operationId"] == "prepareBidScopeMeasurementContext"
     assert operation["x-openai-isConsequential"] is False
+
+
+def test_bidscope_prepare_attachment_context_uses_all_conversation_files(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_download(file_references, destination):
+        captured["file_count"] = len(file_references)
+        paths = []
+        for index, name in enumerate(("Architectural Part 1.pdf", "Architectural Part 2.pdf"), start=1):
+            part_directory = destination / f"part-{index:02d}"
+            part_directory.mkdir()
+            path = part_directory / name
+            path.write_bytes(b"%PDF-1.4\n")
+            paths.append(path)
+        return paths
+
+    def fake_prepare(inspection, **kwargs):
+        captured["candidate_names"] = [row.document_name for row in inspection.candidates]
+        captured.update(kwargs)
+        return {
+            "schema_version": "spraytec.bidscope_measurement_context.v1",
+            "source_context_id": "a" * 32,
+            "measurement_context_id": "b" * 32,
+            "expires_at": 4102444800,
+            "trade_type": "foam_insulation",
+            "confirmed_page_count": 1,
+            "pages": [{"page_id": "part-2::page_4", "sheet_id": "A-201"}],
+            "measurement_readiness": {"status": "ready_for_tracing"},
+            "warnings": [],
+            "openaiFileResponse": [
+                {
+                    "name": "bidscope_confirmed_measurement_pages.pdf",
+                    "mime_type": "application/pdf",
+                    "content": "JVBERi0xLjQ=",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.estimator_api.server._download_openai_action_bid_package",
+        fake_download,
+    )
+    monkeypatch.setattr(
+        "services.estimator_api.server.prepare_bidscope_measurement_context_from_inspection",
+        fake_prepare,
+    )
+    response = client.post(
+        "/v1/bidscope/prepare-attachment-context",
+        json={
+            "openaiFileIdRefs": [
+                {
+                    "name": "Architectural Part 1.pdf",
+                    "download_link": "https://files.oaiusercontent.com/part-1.pdf",
+                },
+                {
+                    "name": "Architectural Part 2.pdf",
+                    "download_link": "https://files.oaiusercontent.com/part-2.pdf",
+                },
+            ],
+            "confirmed_pages": [
+                {
+                    "sheet_id": "A-201",
+                    "document_name_hint": "Part 2",
+                    "confirmed_scale_text": "1/8 inch = 1 foot",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["measurement_context_id"] == "b" * 32
+    assert captured["file_count"] == 2
+    assert captured["candidate_names"] == [
+        "Architectural Part 1.pdf",
+        "Architectural Part 2.pdf",
+    ]
+    assert captured["sharepoint_url"] == ""
+    assert captured["confirmed_pages"][0]["document_name_hint"] == "Part 2"
+
+
+def test_bidscope_prepare_attachment_context_action_enables_file_handoff() -> None:
+    specification = build_action_openapi(
+        "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
+    )
+    operation = specification["paths"]["/v1/bidscope/prepare-attachment-context"]["post"]
+    request_schema = specification["components"]["schemas"][
+        "BidScopePrepareAttachmentContextRequest"
+    ]
+
+    assert operation["operationId"] == "prepareBidScopeAttachmentContext"
+    assert operation["x-openai-isConsequential"] is False
+    assert request_schema["properties"]["openaiFileIdRefs"]["items"] == {
+        "type": "string"
+    }
+
+
+def test_bidscope_prepare_attachment_context_rejects_untrusted_download_host() -> None:
+    response = client.post(
+        "/v1/bidscope/prepare-attachment-context",
+        json={
+            "openaiFileIdRefs": [
+                {
+                    "name": "Architectural.pdf",
+                    "download_link": "https://example.com/Architectural.pdf",
+                }
+            ],
+            "confirmed_pages": [{"sheet_id": "A-201"}],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "trusted HTTPS download link" in response.json()["detail"]
 
 
 def test_bidscope_region_trace_route_returns_review_overlay(monkeypatch) -> None:

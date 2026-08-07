@@ -25,7 +25,9 @@ from jobscan.business.bidscope_service import (
     build_bidscope_review_packet,
     create_bidscope_measurement_context,
     prepare_bidscope_measurement_context,
+    prepare_bidscope_measurement_context_from_inspection,
 )
+from ingest.package_ingest import inspect_path_package
 from jobscan.business.bidscope_trace_service import trace_bidscope_regions
 
 from jobscan.business.job_service import (
@@ -96,6 +98,7 @@ from .schemas import (
     BidScopeMeasurementContextResponse,
     BidScopePageSelectionRequest,
     BidScopePageSelectionResponse,
+    BidScopePrepareAttachmentContextRequest,
     BidScopePrepareMeasurementContextRequest,
     BidScopeRegionTraceRequest,
     BidScopeRegionTraceResponse,
@@ -145,6 +148,8 @@ from .schemas import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAX_ACTION_WORKBOOK_BYTES = 10 * 1024 * 1024
+MAX_ACTION_BIDSCOPE_FILE_BYTES = 1024 * 1024 * 1024
+MAX_ACTION_BIDSCOPE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 load_project_env(PROJECT_ROOT / ".env")
 PUBLIC_API_ORIGIN = os.getenv(
     "ESTIMATOR_API_PUBLIC_URL",
@@ -156,7 +161,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.25.0",
+    version="0.26.0",
     servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
@@ -755,6 +760,101 @@ def _download_openai_action_workbook(file_reference: Any) -> tuple[str, bytes]:
     if not file_name.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="Attach an XLSX estimate workbook.")
     return file_name, b"".join(chunks)
+
+
+def _download_openai_action_bid_package(
+    file_references: list[Any],
+    destination: Path,
+) -> list[Path]:
+    destination.mkdir(parents=True, exist_ok=True)
+    downloaded: list[Path] = []
+    total_bytes = 0
+    for index, file_reference in enumerate(file_references, start=1):
+        reference = (
+            file_reference.model_dump()
+            if hasattr(file_reference, "model_dump")
+            else file_reference
+        )
+        if not isinstance(reference, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Attach the reviewed bid PDF or ZIP files to "
+                    "prepareBidScopeAttachmentContext; a downloadable file reference was missing."
+                ),
+            )
+        file_name = safe_filename(
+            str(reference.get("name") or f"bid-package-part-{index}.pdf")
+        )
+        if Path(file_name).suffix.lower() not in {".pdf", ".zip"}:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported BidScope attachment {file_name}; attach only PDF or ZIP files.",
+            )
+        download_link = str(reference.get("download_link") or "").strip()
+        parsed = urlsplit(download_link)
+        hostname = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme != "https"
+            or not hostname
+            or not (
+                hostname == "files.oaiusercontent.com"
+                or hostname.endswith(".files.oaiusercontent.com")
+            )
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"The attached BidScope file {file_name} did not provide a trusted HTTPS download link.",
+            )
+        part_directory = destination / f"part-{index:02d}"
+        part_directory.mkdir(parents=True, exist_ok=False)
+        target = part_directory / file_name
+        try:
+            response = requests.get(
+                download_link,
+                timeout=(5, 180),
+                stream=True,
+                allow_redirects=False,
+            )
+            response.raise_for_status()
+            content_length = int(response.headers.get("Content-Length") or 0)
+            if content_length > MAX_ACTION_BIDSCOPE_FILE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"The BidScope attachment {file_name} exceeds 1 GB.",
+                )
+            if total_bytes + content_length > MAX_ACTION_BIDSCOPE_TOTAL_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="The combined BidScope attachments exceed 2 GB.",
+                )
+            with target.open("wb") as output:
+                file_bytes = 0
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    file_bytes += len(chunk)
+                    total_bytes += len(chunk)
+                    if file_bytes > MAX_ACTION_BIDSCOPE_FILE_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"The BidScope attachment {file_name} exceeds 1 GB.",
+                        )
+                    if total_bytes > MAX_ACTION_BIDSCOPE_TOTAL_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail="The combined BidScope attachments exceed 2 GB.",
+                        )
+                    output.write(chunk)
+        except HTTPException:
+            raise
+        except (OSError, requests.RequestException, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"The attached BidScope file {file_name} could not be downloaded: {type(exc).__name__}.",
+            ) from exc
+        downloaded.append(target)
+    return downloaded
 
 
 @app.post(
@@ -1368,6 +1468,60 @@ def bidscope_prepare_measurement_context(
         raise HTTPException(
             status_code=503,
             detail=f"BidScope sheet preparation is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
+    "/v1/bidscope/prepare-attachment-context",
+    response_model=BidScopeMeasurementContextResponse,
+    response_model_exclude_none=True,
+    operation_id="prepareBidScopeAttachmentContext",
+    summary="Prepare attached bid sheets for tracing",
+    description=(
+        "Uses the PDF or ZIP package parts already attached in the conversation to "
+        "resolve confirmed sheets and create a temporary tracing context. It does not "
+        "repeat scope analysis or require SharePoint."
+    ),
+)
+def bidscope_prepare_attachment_context(
+    request: Request,
+    payload: BidScopePrepareAttachmentContextRequest,
+) -> BidScopeMeasurementContextResponse:
+    _require_api_request(request)
+    try:
+        with tempfile.TemporaryDirectory(prefix="bidscope-attachments-") as temporary:
+            package_root = Path(temporary)
+            _download_openai_action_bid_package(
+                payload.openai_file_id_refs,
+                package_root,
+            )
+            inspection = inspect_path_package(package_root)
+            if not inspection.candidates:
+                detail = "; ".join(inspection.warnings[:3]) or (
+                    "No supported PDF or ZIP package parts were attached."
+                )
+                raise BidScopeUnavailableError(detail)
+            result = prepare_bidscope_measurement_context_from_inspection(
+                inspection,
+                sharepoint_url="",
+                confirmed_pages=[page.model_dump() for page in payload.confirmed_pages],
+                trade_type=payload.trade_type,
+                max_scan_pages=payload.max_scan_pages,
+                render_dpi=payload.render_dpi,
+                artifact_dir=_bidscope_artifact_dir(),
+                ttl_seconds=_bidscope_context_ttl_seconds(),
+            )
+        return BidScopeMeasurementContextResponse.model_validate(result)
+    except HTTPException:
+        raise
+    except BidScopeInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BidScopeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"BidScope attachment preparation is unavailable: {type(exc).__name__}.",
         ) from exc
 
 

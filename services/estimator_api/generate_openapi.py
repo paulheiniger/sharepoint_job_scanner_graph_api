@@ -35,16 +35,17 @@ def build_action_openapi(
         {},
     )
     response_schema.get("properties", {}).pop("source_metadata", None)
-    validation_schema = specification["components"]["schemas"].get(
+    for schema_name in (
         "EstimateWorkbookValidationRequest",
-        {},
-    )
-    file_refs = validation_schema.get("properties", {}).get("openaiFileIdRefs")
-    if isinstance(file_refs, dict):
-        # ChatGPT injects runtime file-reference objects, but GPT Actions only
-        # enables the attachment handoff when this parameter is declared as an
-        # array of strings in the imported OpenAPI contract.
-        file_refs["items"] = {"type": "string"}
+        "BidScopePrepareAttachmentContextRequest",
+    ):
+        request_schema = specification["components"]["schemas"].get(schema_name, {})
+        file_refs = request_schema.get("properties", {}).get("openaiFileIdRefs")
+        if isinstance(file_refs, dict):
+            # ChatGPT injects runtime file-reference objects, but GPT Actions only
+            # enables the attachment handoff when this parameter is declared as an
+            # array of strings in the imported OpenAPI contract.
+            file_refs["items"] = {"type": "string"}
     for path_item in specification["paths"].values():
         for method, operation in path_item.items():
             if method.lower() in {"get", "post"}:

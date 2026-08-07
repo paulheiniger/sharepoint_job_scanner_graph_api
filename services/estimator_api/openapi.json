@@ -422,6 +422,62 @@
         "title": "BidScopePageSelectionResponse",
         "type": "object"
       },
+      "BidScopePrepareAttachmentContextRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed_pages": {
+            "description": "Printed sheet IDs selected during native package review.",
+            "items": {
+              "$ref": "#/components/schemas/BidScopePreparedPage"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Confirmed Pages",
+            "type": "array"
+          },
+          "max_scan_pages": {
+            "default": 800,
+            "description": "Hard cap on pages indexed across all attached package parts.",
+            "maximum": 800.0,
+            "minimum": 25.0,
+            "title": "Max Scan Pages",
+            "type": "integer"
+          },
+          "openaiFileIdRefs": {
+            "description": "Attach every relevant PDF or ZIP package part already uploaded in the conversation.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Openaifileidrefs",
+            "type": "array"
+          },
+          "render_dpi": {
+            "default": 144,
+            "description": "Tracing-image resolution; vector PDF coordinates remain authoritative.",
+            "maximum": 200.0,
+            "minimum": 96.0,
+            "title": "Render Dpi",
+            "type": "integer"
+          },
+          "trade_type": {
+            "default": "foam_insulation",
+            "enum": [
+              "foam_insulation",
+              "roofing"
+            ],
+            "title": "Trade Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "openaiFileIdRefs",
+          "confirmed_pages"
+        ],
+        "title": "BidScopePrepareAttachmentContextRequest",
+        "type": "object"
+      },
       "BidScopePrepareMeasurementContextRequest": {
         "additionalProperties": false,
         "properties": {
@@ -7603,7 +7659,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.25.0"
+    "version": "0.26.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7684,6 +7740,46 @@
           }
         },
         "summary": "Select bid-package pages for Assistant visual review",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/bidscope/prepare-attachment-context": {
+      "post": {
+        "description": "Uses the PDF or ZIP package parts already attached in the conversation to resolve confirmed sheets and create a temporary tracing context. It does not repeat scope analysis or require SharePoint.",
+        "operationId": "prepareBidScopeAttachmentContext",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BidScopePrepareAttachmentContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BidScopeMeasurementContextResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare attached bid sheets for tracing",
         "x-openai-isConsequential": false
       }
     },

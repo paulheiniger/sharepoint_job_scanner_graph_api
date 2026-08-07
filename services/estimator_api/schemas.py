@@ -1479,6 +1479,38 @@ class BidScopePrepareMeasurementContextRequest(BaseModel):
     )
 
 
+class BidScopePrepareAttachmentContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    openai_file_id_refs: list[OpenAIFileReference | str] = Field(
+        serialization_alias="openaiFileIdRefs",
+        validation_alias="openaiFileIdRefs",
+        min_length=1,
+        max_length=12,
+        description=(
+            "Attach every relevant PDF or ZIP package part already uploaded in the conversation."
+        ),
+    )
+    confirmed_pages: list[BidScopePreparedPage] = Field(
+        min_length=1,
+        max_length=20,
+        description="Printed sheet IDs selected during native package review.",
+    )
+    trade_type: Literal["foam_insulation", "roofing"] = "foam_insulation"
+    max_scan_pages: int = Field(
+        default=800,
+        ge=25,
+        le=800,
+        description="Hard cap on pages indexed across all attached package parts.",
+    )
+    render_dpi: int = Field(
+        default=144,
+        ge=96,
+        le=200,
+        description="Tracing-image resolution; vector PDF coordinates remain authoritative.",
+    )
+
+
 class BidScopeMeasurementContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

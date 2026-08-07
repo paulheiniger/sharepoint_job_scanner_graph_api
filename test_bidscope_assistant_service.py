@@ -37,7 +37,10 @@ def test_business_ops_prefers_complete_native_package_analysis() -> None:
 
     assert "analyze the entire package with native document reasoning" in normalized
     assert "Use `selectBidScopePages` as a fallback" in normalized
+    assert "`prepareBidScopeAttachmentContext`" in normalized
     assert "`prepareBidScopeMeasurementContext`" in normalized
+    assert "include every relevant part together in `openaiFileIdRefs`" in normalized
+    assert "do not ask the user to upload the same package to SharePoint" in normalized
     assert "identify the seed sheet and foam note/specification" in normalized
     assert "quantity is not measurable from the available package" in normalized
     assert "excluded from the current bid-package takeoff" in normalized
@@ -211,6 +214,36 @@ def test_known_sheet_ids_prepare_measurement_context_without_page_selection(tmp_
     assert prepared["pages"][0]["source_page_number"] == 1
     assert prepared["measurement_readiness"]["status"] == "ready_for_tracing"
     assert (tmp_path / prepared["measurement_context_id"] / "context.json").is_file()
+
+
+def test_known_sheet_ids_prepare_from_multipart_conversation_attachments(tmp_path) -> None:
+    inspection = inspect_uploaded_package(
+        [
+            FakeUpload("Architectural Part 1.pdf", _pdf("A-101 Floor Plans")),
+            FakeUpload(
+                "Architectural Part 2.pdf",
+                _pdf('A-201 Exterior Elevations\nSCALE: 1/8" = 1\'-0"'),
+            ),
+        ]
+    )
+
+    prepared = prepare_bidscope_measurement_context_from_inspection(
+        inspection,
+        sharepoint_url="",
+        confirmed_pages=[
+            {
+                "sheet_id": "A-201",
+                "document_name_hint": "Part 2",
+                "confirmed_scale_text": '1/8" = 1\'-0"',
+            }
+        ],
+        max_scan_pages=25,
+        artifact_dir=tmp_path,
+    )
+
+    assert prepared["confirmed_page_count"] == 1
+    assert prepared["pages"][0]["sheet_id"] == "A-201"
+    assert prepared["pages"][0]["document_name"] == "Architectural Part 2.pdf"
 
 
 def test_known_sheet_resolution_rejects_ambiguous_duplicate_sheet_ids(tmp_path) -> None:

@@ -200,13 +200,14 @@ def prepare_bidscope_measurement_context_from_inspection(
             matches.append(page)
 
         if not matches:
+            source_label = "SharePoint source" if sharepoint_url else "attached package"
             budget_note = (
                 " The scan budget was reached before the full source was indexed."
                 if bool(result.get("partial"))
                 else ""
             )
             raise BidScopeInputError(
-                f"Confirmed sheet {sheet_id} was not found in the SharePoint source."
+                f"Confirmed sheet {sheet_id} was not found in the {source_label}."
                 f"{budget_note} Verify the sheet ID, document hint, or PDF page number."
             )
         if len(matches) > 1:
