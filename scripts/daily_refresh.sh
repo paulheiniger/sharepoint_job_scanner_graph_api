@@ -52,6 +52,7 @@ RUN_SHAREPOINT_JOB_INDEX_SYNC="${RUN_SHAREPOINT_JOB_INDEX_SYNC:-1}"
 RUN_DOCUMENT_STATUS="${RUN_DOCUMENT_STATUS:-1}"
 BACKFILL_DOCUMENT_METADATA="${BACKFILL_DOCUMENT_METADATA:-0}"
 RUN_WARRANTY_SOURCE_REFRESH="${RUN_WARRANTY_SOURCE_REFRESH:-1}"
+RUN_QUICKBOOKS_SYNC="${RUN_QUICKBOOKS_SYNC:-0}"
 WARRANTY_SOURCE_FOLDER="${WARRANTY_SOURCE_FOLDER:-2024 MASTER FILES/2024 ROOFING/COMPLETED/2024 Warranties}"
 WARRANTY_SOURCE_CACHE="${WARRANTY_SOURCE_CACHE:-.cache/warranty_sources}"
 WARRANTY_MASTER_FOLDER="${WARRANTY_MASTER_FOLDER:-WARRANTIES (Master)}"
@@ -219,6 +220,12 @@ if [[ "$RUN_SQL_REFRESHES" == "1" ]]; then
     "$PYTHON_BIN" -m jobscan.business.chart_history_service \
       --database-url "$DATABASE_URL_EFFECTIVE"
   run_step "Refresh Power BI marts" run_sql_file "db/powerbi_marts.sql"
+fi
+
+if [[ "$RUN_QUICKBOOKS_SYNC" == "1" ]]; then
+  run_step "Synchronize QuickBooks accounting read model" \
+    "$PYTHON_BIN" -m jobscan.quickbooks.cli sync \
+      --database-url "$DATABASE_URL_EFFECTIVE"
 fi
 
 if [[ "$RUN_SHAREPOINT_JOB_INDEX_SYNC" == "1" ]]; then

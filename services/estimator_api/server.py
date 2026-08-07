@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 from io import BytesIO
 import os
 import tempfile
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from PIL import Image
 import requests
@@ -54,6 +55,19 @@ from jobscan.business.sharepoint_document_service import (
     search_sharepoint_documents,
 )
 from jobscan.business.warranty_service import get_warranty_list, get_warranty_summary
+from jobscan.db_connections import create_resilient_engine
+from jobscan.quickbooks.oauth import (
+    QuickBooksCompanyMismatchError,
+    complete_admin_authorization,
+    create_admin_authorization,
+)
+from jobscan.quickbooks.security import QuickBooksConfigurationError, QuickBooksStateError
+from jobscan.quickbooks.service import (
+    get_accounting_exceptions,
+    get_accounting_summary,
+    get_customer_context,
+)
+from jobscan.quickbooks.sync import sync_quickbooks
 from jobscan.estimator.context_service import build_copilot_estimator_context
 from jobscan.estimator.planning_snapshot import (
     PlanningSnapshotError,
@@ -125,6 +139,9 @@ from .schemas import (
     OfficeJobProgressResponse,
     ProductionBudgetHealthRequest,
     ProductionBudgetHealthResponse,
+    QuickBooksAccountingResponse,
+    QuickBooksAccountingSummaryRequest,
+    QuickBooksCustomerContextRequest,
     RoofMeasureCalculationRequest,
     RoofMeasureCalculationResponse,
     RoofMeasureContextRequest,
@@ -161,7 +178,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.26.0",
+    version="0.27.0",
     servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
@@ -188,16 +205,16 @@ PRIVACY_POLICY_HTML = """<!doctype html>
   <p>This policy describes how Spray-Tec, Inc. handles information sent to the Spray-Tec Business Assistant API through a custom GPT or another authorized client.</p>
 
   <h2>Information processed</h2>
-  <p>The service may process job notes, customer or project names, site addresses, measurements, scope details, estimating decisions, and operational questions supplied by a user. When a user provides an image or document to ChatGPT, the service generally receives the structured facts or notes that the GPT sends to the API, rather than the original file. At a user's request, the service may also retrieve metadata and readable content from SharePoint job documents already indexed by Spray-Tec's SharePoint Job Scanner.</p>
+  <p>The service may process job notes, customer or project names, site addresses, measurements, scope details, estimating decisions, operational questions, and synchronized QuickBooks customer and sales-transaction records supplied by authorized business systems. The initial QuickBooks integration excludes payroll, bank-account, and payment-card data. When a user provides an image or document to ChatGPT, the service generally receives the structured facts or notes that the GPT sends to the API, rather than the original file. At a user's request, the service may also retrieve metadata and readable content from SharePoint job documents already indexed by Spray-Tec's SharePoint Job Scanner.</p>
 
   <h2>How information is used</h2>
-  <p>Information is used only to retrieve business evidence and source documents, prepare summaries and charts, support estimate decisions, validate estimate inputs, and generate draft estimate workbooks requested by an authorized user. Most SharePoint operations are read-only. When requested, a validated draft estimate may be uploaded only to Spray-Tec's configured SharePoint estimate-staging folder. Drafts require human review and are not automatically filed in permanent job folders.</p>
+  <p>Information is used only to retrieve business evidence and source documents, prepare summaries and charts, support estimate decisions, validate estimate inputs, report synchronized accounting context, and generate draft estimate workbooks requested by an authorized user. QuickBooks operations exposed to the Assistant are read-only. Most SharePoint operations are read-only. When requested, a validated draft estimate may be uploaded only to Spray-Tec's configured SharePoint estimate-staging folder. Drafts require human review and are not automatically filed in permanent job folders.</p>
 
   <h2>Storage and retention</h2>
   <p>Context, reporting, and SharePoint document requests are processed to produce the requested response and are not intentionally added to a separate marketing or advertising database. A SharePoint source file downloaded for on-demand text extraction is held only in temporary service storage for that request. Generated workbooks and roof-measure context images are stored temporarily by the API so the requesting user can retrieve them; signed links normally expire after 15 minutes. Validated workbooks uploaded to the configured SharePoint staging folder remain there until Spray-Tec reviews, moves, or deletes them. Limited technical logs and temporary service files may be retained as needed for security, troubleshooting, reliability, and service operation.</p>
 
   <h2>Sharing and service providers</h2>
-  <p>Spray-Tec does not sell information submitted to this service. Information may be processed by service providers used to operate it, including OpenAI for the ChatGPT experience, Microsoft Azure for API hosting, Microsoft Graph and SharePoint for authorized source-document retrieval, Mapbox for address geocoding and satellite imagery, and public mapping or LiDAR services used to retrieve building evidence. Those providers handle information under their own terms and privacy commitments. Information may also be disclosed when required by law or to protect the security and integrity of the service.</p>
+  <p>Spray-Tec does not sell information submitted to this service. Information may be processed by service providers used to operate it, including OpenAI for the ChatGPT experience, Microsoft Azure for API hosting, Microsoft Graph and SharePoint for authorized source-document retrieval, Intuit QuickBooks for authorized accounting synchronization, Mapbox for address geocoding and satellite imagery, and public mapping or LiDAR services used to retrieve building evidence. Those providers handle information under their own terms and privacy commitments. Information may also be disclosed when required by law or to protect the security and integrity of the service.</p>
 
   <h2>Security and appropriate use</h2>
   <p>The API uses access controls and encrypted network connections. Users should submit only information needed for Spray-Tec business purposes and should not submit payment-card details, Social Security numbers, health information, passwords, or other unnecessary sensitive personal information.</p>
@@ -1763,6 +1780,155 @@ def sales_followups(
             status_code=503,
             detail=f"Sales follow-ups are unavailable: {type(exc).__name__}.",
         ) from exc
+
+
+@app.post(
+    "/v1/accounting/summary",
+    response_model=QuickBooksAccountingResponse,
+    response_model_exclude_none=True,
+    operation_id="getQuickBooksAccountingSummary",
+    summary="Summarize synchronized QuickBooks accounting activity",
+    description=(
+        "Returns read-only open receivables, overdue invoices, recent payments, "
+        "and synchronization freshness from Spray-Tec's operational accounting read model."
+    ),
+)
+def quickbooks_accounting_summary(
+    request: Request,
+    payload: QuickBooksAccountingSummaryRequest,
+) -> QuickBooksAccountingResponse:
+    _require_api_request(request)
+    try:
+        return QuickBooksAccountingResponse.model_validate(get_accounting_summary(
+            database_url=_database_url(),
+            customer_query=payload.customer_query,
+            limit=payload.limit,
+        ))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Accounting summary is unavailable: {type(exc).__name__}.") from exc
+
+
+@app.post(
+    "/v1/accounting/customer-context",
+    response_model=QuickBooksAccountingResponse,
+    response_model_exclude_none=True,
+    operation_id="getQuickBooksCustomerContext",
+    summary="Retrieve synchronized QuickBooks customer context",
+    description=(
+        "Returns read-only customer, estimate, invoice, credit, and payment evidence "
+        "for a customer name or reviewed Spray-Tec job link."
+    ),
+)
+def quickbooks_customer_context(
+    request: Request,
+    payload: QuickBooksCustomerContextRequest,
+) -> QuickBooksAccountingResponse:
+    _require_api_request(request)
+    try:
+        return QuickBooksAccountingResponse.model_validate(get_customer_context(
+            database_url=_database_url(),
+            customer_query=payload.customer_query,
+            job_id=payload.job_id,
+            limit=payload.limit,
+        ))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Customer accounting context is unavailable: {type(exc).__name__}.") from exc
+
+
+@app.post(
+    "/v1/accounting/exceptions",
+    response_model=QuickBooksAccountingResponse,
+    response_model_exclude_none=True,
+    operation_id="getQuickBooksAccountingExceptions",
+    summary="Retrieve synchronized QuickBooks accounting exceptions",
+    description=(
+        "Returns a bounded read-only list of overdue receivables and accounting-data "
+        "freshness warnings for operational follow-up."
+    ),
+)
+def quickbooks_accounting_exceptions(
+    request: Request,
+    payload: QuickBooksAccountingSummaryRequest,
+) -> QuickBooksAccountingResponse:
+    _require_api_request(request)
+    try:
+        return QuickBooksAccountingResponse.model_validate(get_accounting_exceptions(
+            database_url=_database_url(),
+            limit=payload.limit,
+        ))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Accounting exceptions are unavailable: {type(exc).__name__}.") from exc
+
+
+@app.post("/v1/integrations/quickbooks/authorize", include_in_schema=False)
+def quickbooks_authorize(request: Request) -> dict[str, str]:
+    _require_api_request(request)
+    database_url = _database_url()
+    if not database_url:
+        raise HTTPException(status_code=503, detail="Database configuration is unavailable.")
+    engine = create_resilient_engine(database_url)
+    try:
+        return {
+            "company": str(os.getenv("QUICKBOOKS_EXPECTED_COMPANY_NAME") or "Spray-Tec Inc."),
+            "status": "awaiting_administrator_authorization",
+            "authorization_url": create_admin_authorization(engine),
+        }
+    except QuickBooksConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        engine.dispose()
+
+
+@app.get("/v1/integrations/quickbooks/callback", include_in_schema=False, response_class=HTMLResponse)
+def quickbooks_callback(
+    background_tasks: BackgroundTasks,
+    state: str = "",
+    code: str = "",
+    realmId: str = "",
+    error: str = "",
+) -> HTMLResponse:
+    if error:
+        return HTMLResponse("<h1>QuickBooks authorization was not completed.</h1><p>You may close this window.</p>", status_code=400)
+    database_url = _database_url()
+    if not database_url:
+        raise HTTPException(status_code=503, detail="Database configuration is unavailable.")
+    engine = create_resilient_engine(database_url)
+    try:
+        result = complete_admin_authorization(engine, state=state, code=code, realm_id=realmId)
+        company = html.escape(result["company_name"])
+        background_tasks.add_task(_run_quickbooks_initial_sync, database_url, realmId)
+        return HTMLResponse(
+            f"<h1>{company} is connected.</h1><p>Authorization succeeded and the initial read-only synchronization has started. You may close this window.</p>"
+        )
+    except (QuickBooksStateError, QuickBooksCompanyMismatchError, QuickBooksConfigurationError) as exc:
+        return HTMLResponse(f"<h1>QuickBooks authorization failed.</h1><p>{str(exc)}</p>", status_code=400)
+    finally:
+        engine.dispose()
+
+
+@app.post("/v1/integrations/quickbooks/sync", include_in_schema=False)
+def quickbooks_sync(request: Request, full: bool = False) -> dict[str, Any]:
+    _require_api_request(request)
+    database_url = _database_url()
+    if not database_url:
+        raise HTTPException(status_code=503, detail="Database configuration is unavailable.")
+    engine = create_resilient_engine(database_url)
+    try:
+        return sync_quickbooks(engine, full=full)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"QuickBooks synchronization failed: {type(exc).__name__}.") from exc
+    finally:
+        engine.dispose()
+
+
+def _run_quickbooks_initial_sync(database_url: str, realm_id: str) -> None:
+    engine = create_resilient_engine(database_url)
+    try:
+        sync_quickbooks(engine, realm_id=realm_id, full=True)
+    finally:
+        engine.dispose()
 
 
 @app.post(

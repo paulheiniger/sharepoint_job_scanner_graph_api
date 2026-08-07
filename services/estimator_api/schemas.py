@@ -1867,6 +1867,47 @@ class SalesIntelligenceResponse(BaseModel):
     response_budget: dict[str, Any] = Field(default_factory=dict)
 
 
+class QuickBooksAccountingSummaryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_query: str = Field(
+        default="",
+        max_length=300,
+        description="Optional customer or company name fragment.",
+    )
+    limit: int = Field(default=15, ge=1, le=25)
+
+
+class QuickBooksCustomerContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_query: str = Field(
+        default="",
+        max_length=300,
+        description="Customer, project, or company name fragment.",
+    )
+    job_id: str = Field(
+        default="",
+        max_length=200,
+        description="Optional Spray-Tec job identifier linked to a QuickBooks customer.",
+    )
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class QuickBooksAccountingResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: str
+    as_of: str
+    connection: dict[str, Any] = Field(default_factory=dict)
+    filters_applied: dict[str, Any] = Field(default_factory=dict)
+    headline_metrics: dict[str, Any] = Field(default_factory=dict)
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    source_tables: list[str] = Field(default_factory=list)
+    data_freshness: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class OperationsBacklogRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

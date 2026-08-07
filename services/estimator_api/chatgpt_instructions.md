@@ -32,6 +32,22 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   bounded `candidate_matches` as suggestions, never as authoritative updates.
 - Surface blockers, missing documents, source URLs, and truncation.
 
+## QuickBooks accounting
+
+- Use `getQuickBooksAccountingSummary` for open receivables, overdue totals,
+  and recent collections. Use `getQuickBooksAccountingExceptions` for the
+  bounded overdue follow-up list, and `getQuickBooksCustomerContext` for one
+  customer or reviewed Spray-Tec job link.
+- QuickBooks actions read only from the synchronized operational database. They
+  cannot create, edit, send, void, receive payment against, or delete any
+  QuickBooks record. Never imply that an accounting action changed QuickBooks.
+- State the synchronization timestamp and warnings. A missing synchronized
+  record does not prove it is absent from QuickBooks when the sync is stale,
+  incomplete, or awaiting administrator authorization.
+- Keep estimates, invoices, payments, credits, sales pipeline value, and
+  production-budget proxies distinct. Never treat an estimate as revenue, an
+  invoice as collected cash, or a production-cost proxy as an accounting cost.
+
 ## SharePoint documents
 
 - Use `searchSharePointDocuments` when the user asks to find, inspect, compare,

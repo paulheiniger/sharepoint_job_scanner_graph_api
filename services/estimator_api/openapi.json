@@ -5664,6 +5664,112 @@
         "title": "ProductionBudgetHealthResponse",
         "type": "object"
       },
+      "QuickBooksAccountingResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "connection": {
+            "title": "Connection",
+            "type": "object"
+          },
+          "data_freshness": {
+            "title": "Data Freshness",
+            "type": "object"
+          },
+          "filters_applied": {
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "headline_metrics": {
+            "title": "Headline Metrics",
+            "type": "object"
+          },
+          "records": {
+            "items": {
+              "type": "object"
+            },
+            "maxItems": 50,
+            "title": "Records",
+            "type": "array"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of"
+        ],
+        "title": "QuickBooksAccountingResponse",
+        "type": "object"
+      },
+      "QuickBooksAccountingSummaryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "customer_query": {
+            "default": "",
+            "description": "Optional customer or company name fragment.",
+            "maxLength": 300,
+            "title": "Customer Query",
+            "type": "string"
+          },
+          "limit": {
+            "default": 15,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "QuickBooksAccountingSummaryRequest",
+        "type": "object"
+      },
+      "QuickBooksCustomerContextRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "customer_query": {
+            "default": "",
+            "description": "Customer, project, or company name fragment.",
+            "maxLength": 300,
+            "title": "Customer Query",
+            "type": "string"
+          },
+          "job_id": {
+            "default": "",
+            "description": "Optional Spray-Tec job identifier linked to a QuickBooks customer.",
+            "maxLength": 200,
+            "title": "Job Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "QuickBooksCustomerContextRequest",
+        "type": "object"
+      },
       "RoofMeasureCalculationRequest": {
         "additionalProperties": false,
         "properties": {
@@ -7659,10 +7765,130 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.26.0"
+    "version": "0.27.0"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/accounting/customer-context": {
+      "post": {
+        "description": "Returns read-only customer, estimate, invoice, credit, and payment evidence for a customer name or reviewed Spray-Tec job link.",
+        "operationId": "getQuickBooksCustomerContext",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuickBooksCustomerContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuickBooksAccountingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve synchronized QuickBooks customer context",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/accounting/exceptions": {
+      "post": {
+        "description": "Returns a bounded read-only list of overdue receivables and accounting-data freshness warnings for operational follow-up.",
+        "operationId": "getQuickBooksAccountingExceptions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuickBooksAccountingSummaryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuickBooksAccountingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve synchronized QuickBooks accounting exceptions",
+        "x-openai-isConsequential": false
+      }
+    },
+    "/v1/accounting/summary": {
+      "post": {
+        "description": "Returns read-only open receivables, overdue invoices, recent payments, and synchronization freshness from Spray-Tec's operational accounting read model.",
+        "operationId": "getQuickBooksAccountingSummary",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuickBooksAccountingSummaryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuickBooksAccountingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarize synchronized QuickBooks accounting activity",
+        "x-openai-isConsequential": false
+      }
+    },
     "/v1/bidscope/measurement-context": {
       "post": {
         "description": "Accepts page IDs confirmed from a prior BidScope selection. It preserves each original vector PDF page, renders a high-resolution tracing image, and resolves estimator-confirmed or detected drawing scales. It does not segment regions or calculate quantities.",
