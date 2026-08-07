@@ -18,10 +18,10 @@ def _ref(source: str, source_type: str, used_for: str, lineage_or_rule: str) -> 
     return DashboardSourceReference(source, source_type, used_for, lineage_or_rule)
 
 
-DASHBOARD_CORE_PAGES = [
+DASHBOARD_PAGES = [
+    "Job Board",
     "Sales Dashboard",
     "Operations Dashboard",
-    "Job Board",
     "Office Timesheet",
     "Timesheet Job Touches",
     "Job Tracking",
@@ -29,30 +29,9 @@ DASHBOARD_CORE_PAGES = [
     "Schedule Calendar",
     "Daily Crew Dispatch",
     "Daily Production",
-    "Estimating Assistant",
     "AI Roof Measure",
     "Pricing Catalog",
-    "Ask Spray-Tec",
-    "BidScope AI",
     "Admin / Health",
-]
-
-DASHBOARD_LEGACY_PAGES = [
-    "Owner Overview",
-    "Pipeline / Money",
-    "Sales Follow-Up",
-    "Contracted Backlog / Scheduling",
-    "Project Scheduling",
-    "Jobs Needing Action",
-    "Closeout / Billing Risk",
-    "Documentation Risk",
-    "Job Warnings",
-    "Estimate Analytics",
-    "Estimate Quality Issues",
-    "Line Item Analysis",
-    "Estimate Adders",
-    "STAMP Tracking",
-    "Raw Tables",
 ]
 
 
@@ -583,4 +562,4 @@ def audit_notes_for_page(page: str) -> tuple[str, ...]:
 
 
 def all_dashboard_pages() -> tuple[str, ...]:
-    return tuple(DASHBOARD_CORE_PAGES + DASHBOARD_LEGACY_PAGES)
+    return tuple(DASHBOARD_PAGES)

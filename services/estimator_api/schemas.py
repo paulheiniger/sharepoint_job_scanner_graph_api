@@ -1717,6 +1717,101 @@ class JobContextResponse(BaseModel):
     response_budget: dict[str, Any] = Field(default_factory=dict)
 
 
+OperationalTimeSeriesDataset = Literal[
+    "job_tracking_daily",
+    "daily_production",
+    "daily_material_usage",
+    "office_activity",
+    "workflow_events",
+]
+OperationalTimeSeriesMetric = Literal[
+    "labor_hours",
+    "travel_hours",
+    "load_hours",
+    "os_hours",
+    "mileage",
+    "os_mileage",
+    "foam_strokes",
+    "foam_lbs",
+    "foam_sets",
+    "foam_sqft",
+    "foam_yield",
+    "base_coat_1",
+    "base_sqft",
+    "base_coat_2",
+    "top_sqft",
+    "granules",
+    "af_buttergrade",
+    "caulk",
+    "primer",
+    "sf",
+    "quantity",
+    "duration_hours",
+    "temperature_f",
+    "wind_mph",
+    "humidity_pct",
+    "interior_temperature_f",
+    "substrate_temperature_f",
+    "substrate_moisture",
+]
+
+
+class OperationalTimeSeriesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dataset: OperationalTimeSeriesDataset = Field(
+        description="Approved dated operational record set to retrieve.",
+    )
+    start_date: date | None = Field(default=None, description="Inclusive start date.")
+    end_date: date | None = Field(default=None, description="Inclusive end date.")
+    job_ids: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Optional authoritative Spray-Tec job IDs.",
+    )
+    division: str = Field(default="", max_length=100)
+    query: str = Field(
+        default="",
+        max_length=200,
+        description="Optional customer, job, activity, crew, note, or source text.",
+    )
+    scope_terms: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        default_factory=list,
+        max_length=5,
+        description=(
+            "Require text evidence for every term across job, document-signal, estimate-row, "
+            "and tracking sources; for example closed cell and wall."
+        ),
+    )
+    metric: OperationalTimeSeriesMetric | None = Field(
+        default=None,
+        description="Optional approved metric name used to filter the selected dataset.",
+    )
+    positive_only: bool = Field(
+        default=False,
+        description="When metric is supplied, return only rows with a positive value or derivation basis.",
+    )
+    page: int = Field(default=1, ge=1, le=1000)
+    page_size: int = Field(default=100, ge=1, le=100)
+    sort_order: Literal["ascending", "descending"] = "ascending"
+
+
+class OperationalTimeSeriesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    as_of: str
+    dataset: OperationalTimeSeriesDataset
+    date_field: str
+    available_metrics: list[str] = Field(default_factory=list)
+    filters_applied: dict[str, Any] = Field(default_factory=dict)
+    pagination: dict[str, Any] = Field(default_factory=dict)
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    source_tables: list[str] = Field(default_factory=list)
+    calculation_guidance: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class WarrantySummaryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

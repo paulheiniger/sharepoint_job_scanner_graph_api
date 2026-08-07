@@ -25,6 +25,12 @@ def build_action_openapi(
     ]
     specification["paths"].pop("/health", None)
     specification["paths"].pop("/v1/estimating/workbooks/{artifact_id}", None)
+    # Roof measurement remains available to internal clients, but its three-step
+    # action workflow is temporarily omitted to make room for higher-value
+    # operational intelligence within the GPT action limit.
+    specification["paths"].pop("/v1/roof-measure/context", None)
+    specification["paths"].pop("/v1/roof-measure/segment", None)
+    specification["paths"].pop("/v1/roof-measure/calculate", None)
     request_schema = specification["components"]["schemas"].get(
         "EstimateContextRequest",
         {},

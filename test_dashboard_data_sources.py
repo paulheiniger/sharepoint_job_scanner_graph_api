@@ -5,8 +5,7 @@ import inspect
 import dashboard.app as app
 import pandas as pd
 from dashboard.data_sources import (
-    DASHBOARD_CORE_PAGES,
-    DASHBOARD_LEGACY_PAGES,
+    DASHBOARD_PAGES,
     PAGE_SOURCE_REFERENCES,
     all_dashboard_pages,
     audit_notes_for_page,
@@ -18,8 +17,8 @@ def test_every_navigable_dashboard_page_has_source_references() -> None:
     pages = all_dashboard_pages()
 
     assert len(pages) == len(set(pages))
-    assert set(pages) == set(DASHBOARD_CORE_PAGES + DASHBOARD_LEGACY_PAGES)
-    assert set(PAGE_SOURCE_REFERENCES) == set(pages)
+    assert pages == tuple(DASHBOARD_PAGES)
+    assert set(pages).issubset(PAGE_SOURCE_REFERENCES)
     assert all(references_for_page(page) for page in pages)
 
 
@@ -35,10 +34,6 @@ def test_high_risk_rollups_have_reconciliation_notes() -> None:
         "Sales Dashboard",
         "Operations Dashboard",
         "Job Board",
-        "Jobs Needing Action",
-        "Closeout / Billing Risk",
-        "Estimate Analytics",
-        "Estimate Quality Issues",
     ]:
         assert audit_notes_for_page(page)
 
@@ -47,12 +42,40 @@ def test_page_dispatch_always_renders_source_footer() -> None:
     source = inspect.getsource(app.render_dashboard_page)
 
     assert "render_dashboard_source_references(page)" in source
-    assert app.DASHBOARD_CORE_PAGES == DASHBOARD_CORE_PAGES
-    assert app.DASHBOARD_LEGACY_PAGES == DASHBOARD_LEGACY_PAGES
+    assert app.DASHBOARD_PAGES == DASHBOARD_PAGES
+
+
+def test_job_board_is_home_and_gpt_migrated_pages_are_not_navigable() -> None:
+    removed_pages = {
+        "Estimating Assistant",
+        "Ask Spray-Tec",
+        "BidScope AI",
+        "Owner Overview",
+        "Pipeline / Money",
+        "Sales Follow-Up",
+        "Contracted Backlog / Scheduling",
+        "Project Scheduling",
+        "Jobs Needing Action",
+        "Closeout / Billing Risk",
+        "Documentation Risk",
+        "Job Warnings",
+        "Estimate Analytics",
+        "Estimate Quality Issues",
+        "Line Item Analysis",
+        "Estimate Adders",
+        "STAMP Tracking",
+        "Raw Tables",
+    }
+    assert DASHBOARD_PAGES[0] == "Job Board"
+    assert removed_pages.isdisjoint(DASHBOARD_PAGES)
+    main_source = inspect.getsource(app.main)
+    dispatch_source = inspect.getsource(app.render_dashboard_page)
+    assert "Show legacy/raw dashboard pages" not in main_source
+    assert all(page not in dispatch_source for page in removed_pages)
 
 
 def test_warranty_registry_is_a_core_page_with_provenance_notes() -> None:
-    assert "Warranty Registry" in DASHBOARD_CORE_PAGES
+    assert "Warranty Registry" in DASHBOARD_PAGES
     assert references_for_page("Warranty Registry")
     assert audit_notes_for_page("Warranty Registry")
     assert "warranty_registry_page()" in inspect.getsource(app.render_dashboard_page)

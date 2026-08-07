@@ -174,93 +174,28 @@ state uncertainty, coverage, and warnings. Never invent unavailable results.
   from `display_start_date` to `display_end_date`. Retain continuation flags,
   health, blockers, and unassigned work; distinguish health beyond color.
 
-## Roof measurement
+## Operational time series
 
-- For an address-based roof measurement, call `getRoofMeasureContext` with
-  `view: building_detail` for a normal single-building site so SAM2 receives
-  the clearer zoom-19 source image. Use `whole_site` first only for a named
-  campus, multi-building facility, ambiguous address, or other site whose full
-  extent must be established. If detail crops or omits any intended roof, retry
-  with `whole_site`; do not compensate for a wrong address by measuring a nearby
-  building. Do not search the web for roof dimensions when this action is
-  available.
-- Do not retrieve an extra-close image before the intended footprint is known.
-  After footprint confirmation, `segmentRoofMeasureContext` automatically
-  retrieves the tightest safe image centered on all selected footprint bounds,
-  retains a safety margin, and reports `source_zoom`. If that retrieval fails,
-  it uses the reviewed context image and warns. A conversational request for a
-  closer view should therefore reuse the confirmed footprint through this
-  segmentation action, not enlarge old pixels or guess a fixed zoom.
-- Do not call an OpenAI model or use general visual reasoning to invent a roof
-  polygon. After the user confirms the intended footprint IDs, call
-  `segmentRoofMeasureContext` before calculation unless the user explicitly
-  requests the unrefined footprint-only result. Segmentation is required when
-  the reviewed overlay visibly omits roof edges, overhangs, canopies, connectors,
-  or attached sections. Display the exact returned candidate overlay and ask the
-  user to confirm a candidate; never treat `recommended_candidate_id` as
-  confirmation.
-- Only after explicit candidate confirmation, call `calculateRoofMeasurement`
-  with that unchanged `sam2_candidate_id`. If SAM2 is unavailable, retain the
-  reviewed-footprint or custom-polygon workflow; never invent a fallback mask.
-- When calculating from reviewed custom polygon sections, the calculation
-  action automatically retrieves a tight image centered on those sections and
-  returns the final overlay on that clearer source. Display that returned file;
-  do not reuse the original whole-site context image as the final illustration.
-- Send the user-provided facility name as `site_name` and a physical
-  classification such as `school`, `campus`, or `single building` as
-  `site_type`. `job_id` is optional. Do not retrieve or use a stored job area to
-  choose footprints; this action must be useful for previously unmeasured sites.
-  If the first context call fails,
-  retry once with the same normalized street address, `view: whole_site`, and
-  `include_lidar_coverage: false`. If that retry fails, report the action error
-  and stop; do not substitute web search, public GIS, or guessed dimensions.
-- Decode `footprint_overlay_preview_base64` using its media type and inspect the
-  resulting image before choosing footprint IDs. Do this silently; do not print
-  the decoding code. The preview is self-contained and is preferred over trying
-  to download the signed URL. Compare it with any user-supplied aerial or field
-  image. Never select candidates solely because they are the largest or nearest.
-- Confirm that every intended roof is fully inside the image and visibly traced.
-  A building touching the image edge or an untraced roof is missing evidence;
-  say so rather than substituting a different candidate. An address point is a
-  search location, not a roof boundary. For a named campus, facility, or
-  multi-building site, inspect every associated roof section instead of using
-  only the building containing the geocoder point.
-- Review `candidate_groups` and the orange suggested group on the overlay. For
-  a school or campus, prefer the complete named facility assembly rather than
-  the footprint containing the address point. Use the suggestion only when the
-  imagery supports it; otherwise present the candidate groups for confirmation.
-- Use a returned footprint ID only when it follows the complete intended roof.
-  Otherwise submit one or more reviewed custom pixel polygons to
-  `calculateRoofMeasurement`. Never combine duplicate footprint candidates or
-  double-count overlapping sections.
-- Treat `lidar_guidance_used` and the candidate LiDAR fractions returned by
-  `segmentRoofMeasureContext` as supporting boundary evidence. They show whether
-  the candidate retained connected elevated blocks and avoided ground, but do
-  not independently prove pitch or survey-grade geometry. A
-  `sam2_lidar_high_band` candidate is a guarded review alternative, not an
-  automatic correction. It excludes measured low and averaged transition
-  blocks below the connected high-elevation roof band, but retains unsampled
-  blocks. Always disclose `lidar_sampled_fraction`, show the alternative beside
-  the unmodified SAM2 candidate, and let the user confirm the visible boundary.
-- Prefer a candidate with `geometry_refinement: dominant_orthogonal` when its
-  overlay accurately follows the roof. It deterministically favors near-right
-  angles relative to the building's dominant axes and is rejected above 1.5%
-  area drift. Show its `mask_polygon` source candidate beside it and disclose
-  `geometry_area_drift_fraction`; never treat straightening as missing-roof
-  recovery.
-- Omitted pitch means horizontal plan-view area only. Send
-  `pitch_rise_per_12: 0` only when a flat roof is supported; otherwise keep
-  surface area unresolved. LiDAR coverage metadata proves only that public data
-  exists; only segmentation responses with `lidar_guidance_used: true` used the
-  height grid in boundary ranking and the guarded high-band alternative.
-- Lead with measured plan area, perimeter, measurement basis, and whether a
-  slope adjustment was applied. The calculation action returns
-  `openaiFileResponse`; attach its native `roof_measure_overlay.jpg` file in the
-  final answer so the user can verify exactly what was measured. Do not route
-  the image through web search, rebuild it in Data Analysis, output the signed
-  URL, or redraw it on a blank grid. Always retain the API warnings and
-  `requires_estimator_verification` status. The result is estimate evidence,
-  not a survey or an automatically approved takeoff.
+- Use `getOperationalTimeSeries` for questions that require dated underlying
+  records rather than job totals: daily field production, material usage,
+  office activity, workflow events, or historical Job Tracking entries.
+- For average closed-cell foam sets sprayed per day on vertical surfaces, use
+  `dataset: job_tracking_daily`, `scope_terms: ["closed cell", "wall"]`,
+  `metric: foam_sets`, and `positive_only: true`. Retrieve every page by
+  incrementing `page` until `pagination.has_more` is false.
+- Group returned records by `job_id` and `event_date`, sum `foam_sets` within
+  each job-day, and average only positive spraying job-days. Do not divide job
+  totals by elapsed calendar days or by a summary work-day count.
+- Report the date range, qualifying jobs, spraying job-days, mean, median,
+  conversion basis, and material/surface evidence limitations. A set is derived
+  from recorded pounds divided by 1,000; when pounds are absent, strokes are
+  converted at 0.625 lb per stroke before dividing by 1,000.
+- `scope_terms` uses deterministic text evidence from job, estimate, document,
+  and tracking sources. Inspect `scope_evidence`; do not describe the cohort as
+  definitively closed-cell or vertical when the returned evidence is ambiguous.
+- The roof-measurement action workflow is temporarily unavailable. Do not imply
+  that this time-series endpoint measures roofs or replaces estimator-reviewed
+  geometry.
 
 ## Estimating
 

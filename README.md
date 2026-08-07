@@ -32,12 +32,15 @@ The platform currently includes:
 - **Incremental SharePoint ingestion:** Microsoft Graph delta synchronization,
   stable identifier storage, document extraction, job indexing, and bounded
   repair/reconciliation workflows.
-- **Operations dashboard:** sales, job board, scheduling, daily dispatch,
-  production, job tracking, warranties, pricing, estimating, BidScope, AI roof
-  measure, source lineage, and administration/health views.
+- **Operations dashboard:** job board, sales, scheduling, daily dispatch,
+  production, job tracking, warranties, pricing, AI roof measure, source
+  lineage, and administration/health views.
 - **Spray-Tec Business API:** Azure-hosted, action-safe endpoints for estimating
   evidence, jobs, SharePoint documents, sales, operations, warranties,
   accounting context, chart datasets, BidScope, and roof measurement.
+- **Operational time series:** paginated dated Job Tracking, daily production,
+  material usage, office activity, and workflow events for evidence-backed
+  historical productivity and trend questions.
 - **Estimating intelligence:** evidence-backed scope interpretation, historical
   decisions, product/pricing guidance, estimator review, default workbook
   delivery, assistant-edited workbook validation, and confirmation-gated draft
@@ -47,7 +50,8 @@ The platform currently includes:
   deduction tracing for estimator review.
 - **Roof measurement:** calibrated satellite context, building-footprint
   evidence, optional local SAM2 refinement, reviewed polygons, and deterministic
-  plan-area/perimeter calculations.
+  plan-area/perimeter calculations. The service remains available internally,
+  but its three-step workflow is temporarily omitted from the GPT action schema.
 - **Warranty registry:** a deduplicated master of issued and historically
   reported warranties with terms, dates, contacts, job matches, and source
   provenance.
@@ -984,9 +988,9 @@ The Streamlit dashboard includes a **Pricing Catalog** page with search, vendor/
 
 Current pricing rule for future estimator work: new estimates should use current approved rows from `pricing_catalog`. Historical estimate unit prices should be used for analysis and fallback only, and any fallback should be flagged for review.
 
-## Estimator prototype
+## Estimator engine
 
-The Streamlit dashboard includes an **Estimating Assistant** page. This is an early planning aid, not a production estimating system. It uses deterministic rules plus database history when available, with local staging files created by the scanner as a development fallback:
+The estimating engine is exposed through the Spray-Tec GPT Assistant and Business API, not as a Streamlit dashboard page. It uses deterministic rules plus database history when available, with local staging files created by the scanner as a development fallback:
 
 - `output/job_index.json`
 - `output/estimate_summary.json`
@@ -996,7 +1000,7 @@ The Streamlit dashboard includes an **Estimating Assistant** page. This is an ea
 - `output/pricing/pricing_catalog_current_cleaned.csv`
 - `output/pricing/pricing_catalog_current.csv`
 
-The page accepts rough project notes, then opens an estimating workbench populated with Spray-Tec historical company defaults. The workbench is intended to create a high-quality first draft that an estimator can adjust quickly; it is not intended to produce a finished quote automatically.
+The engine accepts rough project notes and builds an estimating workbench populated with Spray-Tec historical company defaults. The workbench is intended to create a high-quality first draft that an estimator can adjust quickly; it is not intended to produce a finished quote automatically.
 
 The main workbench sections are:
 
@@ -1327,7 +1331,7 @@ These repair artifacts are intended to calibrate small repair estimates from fie
 
 ### Repair Estimator MVP
 
-The Streamlit dashboard includes repair estimating inside the **Estimating Assistant** page. Choose **Estimate Type → Roof Repair**, or leave **Auto-detect** on and enter repair notes. Repair mode reads the normalized VSimple repair tables from Postgres:
+The GPT Assistant supports repair estimating through the same estimating engine. Explicitly request **Roof Repair**, or allow scope interpretation to detect repair notes. Repair mode reads the normalized VSimple repair tables from Postgres:
 
 - `repair_jobs`
 - `repair_material_usage`
@@ -1364,7 +1368,7 @@ Guardrails:
 
 ### Field-notes estimator
 
-The first field-notes-to-estimate engine is available inside the Streamlit **Estimating Assistant** page. It accepts rough notes such as:
+The first field-notes-to-estimate engine is available through the GPT Assistant and Business API. It accepts rough notes such as:
 
 ```text
 Metal roof, about 12,000 sqft, rusted fasteners, wants 15-year warranty, lots of rooftop units, medium access, Louisville KY.
@@ -1428,11 +1432,11 @@ the localhost-only Streamlit and Cloudflare Tunnel deployment in
 That deployment leaves the Business API in Azure and does not open port 8501 on
 the office firewall.
 
-The root `app.py` entrypoint is a small SharePoint scanner prototype and is not the normal operational application. The dashboard entrypoint includes the operations, estimating, FoamScope, BidScope, and AI Roof Measure workflows.
+The root `app.py` entrypoint is a small SharePoint scanner prototype and is not the normal operational application. The Streamlit dashboard is the operational UI; estimating, Ask Spray-Tec, and BidScope are GPT Assistant workflows backed by the Business API.
 
 ## BidScope AI
 
-BidScope AI is a Streamlit page for construction plan/spec PDFs and ZIP bid packages. It identifies trade scope evidence, extracts sheet references, builds a directed reference graph, and produces an estimator-reviewed measurement tree. The current trade profiles are `Foam Insulation` and `Roofing`.
+BidScope AI is a GPT Assistant workflow backed by deterministic Business API services for construction plan/spec PDFs and ZIP bid packages. It identifies trade scope evidence, extracts sheet references, builds a directed reference graph, and produces an estimator-reviewed measurement tree. The current trade profiles are `Foam Insulation` and `Roofing`.
 
 What it does:
 

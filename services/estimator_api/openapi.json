@@ -94,6 +94,7 @@
             "type": "string"
           },
           "measurement_readiness": {
+            "additionalProperties": true,
             "title": "Measurement Readiness",
             "type": "object"
           },
@@ -109,6 +110,7 @@
           },
           "pages": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -118,6 +120,7 @@
           },
           "reference_trees": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -131,6 +134,7 @@
           },
           "scope_gaps": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 100,
@@ -297,6 +301,7 @@
             "type": "string"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
@@ -306,6 +311,7 @@
           },
           "measurement_candidates": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -313,6 +319,7 @@
             "type": "array"
           },
           "measurement_readiness": {
+            "additionalProperties": true,
             "title": "Measurement Readiness",
             "type": "object"
           },
@@ -335,6 +342,7 @@
           "reference_trees": {
             "description": "One evidence tree per scope seed, including resolved reference steps, measurement targets, supporting pages, and gaps.",
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -349,6 +357,7 @@
           "scope_gaps": {
             "description": "Missing referenced sheets, measurement pages omitted from the bounded packet, and seeds without resolved geometry.",
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 100,
@@ -357,6 +366,7 @@
           },
           "seed_pages": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -381,6 +391,7 @@
           },
           "supporting_reference_pages": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -644,6 +655,7 @@
           },
           "quantity_summary": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 40,
@@ -676,6 +688,7 @@
           },
           "traces": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 8,
@@ -1127,10 +1140,12 @@
             "type": "string"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
@@ -1171,6 +1186,7 @@
             "title": "End Field"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
@@ -1196,6 +1212,7 @@
           },
           "rows": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 365,
@@ -1467,6 +1484,7 @@
             "type": "string"
           },
           "freshness": {
+            "additionalProperties": true,
             "title": "Freshness",
             "type": "object"
           },
@@ -1605,6 +1623,7 @@
             "type": "array"
           },
           "scope": {
+            "additionalProperties": true,
             "description": "Structured current-job facts extracted by Copilot.",
             "title": "Scope",
             "type": "object"
@@ -1632,6 +1651,7 @@
         "properties": {
           "approved_memories": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Approved Memories",
@@ -1645,6 +1665,7 @@
             "type": "array"
           },
           "commercial_guidance": {
+            "additionalProperties": true,
             "title": "Commercial Guidance",
             "type": "object"
           },
@@ -1657,6 +1678,7 @@
           },
           "decision_evidence": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Decision Evidence",
@@ -1664,6 +1686,7 @@
           },
           "foam_yield_history": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Foam Yield History",
@@ -1696,11 +1719,13 @@
             "type": "array"
           },
           "labor_cost_summary": {
+            "additionalProperties": true,
             "title": "Labor Cost Summary",
             "type": "object"
           },
           "labor_plan_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Labor Plan Guidance",
@@ -1708,6 +1733,7 @@
           },
           "logistics_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Logistics Guidance",
@@ -1715,12 +1741,14 @@
           },
           "matched_comparables": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Matched Comparables",
             "type": "array"
           },
           "matched_scope_pattern": {
+            "additionalProperties": true,
             "title": "Matched Scope Pattern",
             "type": "object"
           },
@@ -1733,17 +1761,20 @@
           },
           "pricing_candidates": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Pricing Candidates",
             "type": "array"
           },
           "pricing_coverage": {
+            "additionalProperties": true,
             "title": "Pricing Coverage",
             "type": "object"
           },
           "product_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Product Guidance",
@@ -1751,12 +1782,14 @@
           },
           "purchasing_guidance": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Purchasing Guidance",
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -1771,10 +1804,12 @@
             "type": "object"
           },
           "retrieval_summary": {
+            "additionalProperties": true,
             "title": "Retrieval Summary",
             "type": "object"
           },
           "route_mileage": {
+            "additionalProperties": true,
             "title": "Route Mileage",
             "type": "object"
           },
@@ -1783,10 +1818,12 @@
             "type": "string"
           },
           "scope": {
+            "additionalProperties": true,
             "title": "Scope",
             "type": "object"
           },
           "scope_integrity": {
+            "additionalProperties": true,
             "title": "Scope Integrity",
             "type": "object"
           },
@@ -1803,6 +1840,7 @@
           },
           "validated_relationships": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Validated Relationships",
@@ -3348,6 +3386,7 @@
             "type": "string"
           },
           "template_profile": {
+            "additionalProperties": true,
             "title": "Template Profile",
             "type": "object"
           },
@@ -3616,6 +3655,7 @@
             "type": "string"
           },
           "template_profile": {
+            "additionalProperties": true,
             "title": "Template Profile",
             "type": "object"
           },
@@ -3646,6 +3686,7 @@
         "additionalProperties": false,
         "properties": {
           "area_reconciliation": {
+            "additionalProperties": true,
             "title": "Area Reconciliation",
             "type": "object"
           },
@@ -3723,6 +3764,7 @@
             "type": "string"
           },
           "template_profile": {
+            "additionalProperties": true,
             "title": "Template Profile",
             "type": "object"
           },
@@ -3860,6 +3902,7 @@
             "type": "string"
           },
           "template_profile": {
+            "additionalProperties": true,
             "title": "Template Profile",
             "type": "object"
           },
@@ -4518,6 +4561,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4525,15 +4569,18 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "documents": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -4541,6 +4588,7 @@
             "type": "array"
           },
           "job": {
+            "additionalProperties": true,
             "title": "Job",
             "type": "object"
           },
@@ -4550,6 +4598,7 @@
           },
           "recent_daily_tracking": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 10,
@@ -4558,6 +4607,7 @@
           },
           "recent_office_activity": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 10,
@@ -4565,10 +4615,12 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
           "schedule": {
+            "additionalProperties": true,
             "title": "Schedule",
             "type": "object"
           },
@@ -4592,6 +4644,7 @@
           },
           "tracking_summary": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 5,
@@ -4606,6 +4659,7 @@
             "type": "array"
           },
           "workflow": {
+            "additionalProperties": true,
             "title": "Workflow",
             "type": "object"
           }
@@ -4711,6 +4765,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4718,23 +4773,28 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4742,6 +4802,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -4896,6 +4957,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4904,6 +4966,7 @@
           },
           "code_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4911,11 +4974,13 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "daily_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 92,
@@ -4923,11 +4988,13 @@
             "type": "array"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "employee_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4935,15 +5002,18 @@
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "project_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4952,6 +5022,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -4959,6 +5030,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -5073,6 +5145,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -5080,34 +5153,41 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "link_status_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Link Status Rollup",
             "type": "array"
           },
           "methodology": {
+            "additionalProperties": true,
             "title": "Methodology",
             "type": "object"
           },
           "owner_priorities": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 5,
@@ -5116,6 +5196,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -5123,6 +5204,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -5227,6 +5309,243 @@
         "title": "OpenAIFileReference",
         "type": "object"
       },
+      "OperationalTimeSeriesRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "description": "Approved dated operational record set to retrieve.",
+            "enum": [
+              "job_tracking_daily",
+              "daily_production",
+              "daily_material_usage",
+              "office_activity",
+              "workflow_events"
+            ],
+            "title": "Dataset",
+            "type": "string"
+          },
+          "division": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Division",
+            "type": "string"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive end date.",
+            "title": "End Date"
+          },
+          "job_ids": {
+            "description": "Optional authoritative Spray-Tec job IDs.",
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Job Ids",
+            "type": "array"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "enum": [
+                  "labor_hours",
+                  "travel_hours",
+                  "load_hours",
+                  "os_hours",
+                  "mileage",
+                  "os_mileage",
+                  "foam_strokes",
+                  "foam_lbs",
+                  "foam_sets",
+                  "foam_sqft",
+                  "foam_yield",
+                  "base_coat_1",
+                  "base_sqft",
+                  "base_coat_2",
+                  "top_sqft",
+                  "granules",
+                  "af_buttergrade",
+                  "caulk",
+                  "primer",
+                  "sf",
+                  "quantity",
+                  "duration_hours",
+                  "temperature_f",
+                  "wind_mph",
+                  "humidity_pct",
+                  "interior_temperature_f",
+                  "substrate_temperature_f",
+                  "substrate_moisture"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional approved metric name used to filter the selected dataset.",
+            "title": "Metric"
+          },
+          "page": {
+            "default": 1,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "default": 100,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "positive_only": {
+            "default": false,
+            "description": "When metric is supplied, return only rows with a positive value or derivation basis.",
+            "title": "Positive Only",
+            "type": "boolean"
+          },
+          "query": {
+            "default": "",
+            "description": "Optional customer, job, activity, crew, note, or source text.",
+            "maxLength": 200,
+            "title": "Query",
+            "type": "string"
+          },
+          "scope_terms": {
+            "description": "Require text evidence for every term across job, document-signal, estimate-row, and tracking sources; for example closed cell and wall.",
+            "items": {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Scope Terms",
+            "type": "array"
+          },
+          "sort_order": {
+            "default": "ascending",
+            "enum": [
+              "ascending",
+              "descending"
+            ],
+            "title": "Sort Order",
+            "type": "string"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive start date.",
+            "title": "Start Date"
+          }
+        },
+        "required": [
+          "dataset"
+        ],
+        "title": "OperationalTimeSeriesRequest",
+        "type": "object"
+      },
+      "OperationalTimeSeriesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "available_metrics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Available Metrics",
+            "type": "array"
+          },
+          "calculation_guidance": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Calculation Guidance",
+            "type": "array"
+          },
+          "dataset": {
+            "enum": [
+              "job_tracking_daily",
+              "daily_production",
+              "daily_material_usage",
+              "office_activity",
+              "workflow_events"
+            ],
+            "title": "Dataset",
+            "type": "string"
+          },
+          "date_field": {
+            "title": "Date Field",
+            "type": "string"
+          },
+          "filters_applied": {
+            "additionalProperties": true,
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "pagination": {
+            "additionalProperties": true,
+            "title": "Pagination",
+            "type": "object"
+          },
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 100,
+            "title": "Records",
+            "type": "array"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Tables",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "dataset",
+          "date_field"
+        ],
+        "title": "OperationalTimeSeriesResponse",
+        "type": "object"
+      },
       "OperationsBacklogRequest": {
         "additionalProperties": false,
         "properties": {
@@ -5302,6 +5621,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -5309,37 +5629,44 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "crew_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Crew Rollup",
             "type": "array"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "division_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Division Rollup",
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "project_health_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Project Health Rollup",
@@ -5347,6 +5674,7 @@
           },
           "readiness_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Readiness Rollup",
@@ -5354,6 +5682,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -5361,11 +5690,13 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
           "schedule_health_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Schedule Health Rollup",
@@ -5560,6 +5891,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -5568,6 +5900,7 @@
           },
           "bucket_details": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 125,
@@ -5576,34 +5909,41 @@
           },
           "bucket_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Bucket Rollup",
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "methodology": {
+            "additionalProperties": true,
             "title": "Methodology",
             "type": "object"
           },
           "portfolio_rankings": {
             "additionalProperties": {
               "items": {
+                "additionalProperties": true,
                 "type": "object"
               },
               "type": "array"
@@ -5613,6 +5953,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -5620,6 +5961,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -5672,23 +6014,28 @@
             "type": "string"
           },
           "connection": {
+            "additionalProperties": true,
             "title": "Connection",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 50,
@@ -6884,6 +7231,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -6891,23 +7239,28 @@
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "owner_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Owner Rollup",
@@ -6915,6 +7268,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -6922,6 +7276,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -6945,6 +7300,7 @@
           },
           "stage_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Stage Rollup",
@@ -7310,10 +7666,12 @@
         "additionalProperties": false,
         "properties": {
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
@@ -7323,6 +7681,7 @@
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 20,
@@ -7488,36 +7847,43 @@
           },
           "category_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Category Rollup",
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "evidence_status_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Evidence Status Rollup",
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 50,
@@ -7525,6 +7891,7 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
@@ -7665,6 +8032,7 @@
           },
           "attention_items": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -7673,21 +8041,25 @@
           },
           "category_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Category Rollup",
             "type": "array"
           },
           "coverage": {
+            "additionalProperties": true,
             "title": "Coverage",
             "type": "object"
           },
           "data_freshness": {
+            "additionalProperties": true,
             "title": "Data Freshness",
             "type": "object"
           },
           "data_quality_tasks": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -7695,15 +8067,18 @@
             "type": "array"
           },
           "filters_applied": {
+            "additionalProperties": true,
             "title": "Filters Applied",
             "type": "object"
           },
           "headline_metrics": {
+            "additionalProperties": true,
             "title": "Headline Metrics",
             "type": "object"
           },
           "records": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "maxItems": 25,
@@ -7711,10 +8086,12 @@
             "type": "array"
           },
           "response_budget": {
+            "additionalProperties": true,
             "title": "Response Budget",
             "type": "object"
           },
           "review_queue_summary": {
+            "additionalProperties": true,
             "title": "Review Queue Summary",
             "type": "object"
           },
@@ -7738,6 +8115,7 @@
           },
           "status_rollup": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Status Rollup",
@@ -7765,7 +8143,7 @@
   "info": {
     "description": "Estimator evidence, controlled workbook generation, and read-only operational intelligence for conversational agents.",
     "title": "Spray-Tec Business Intelligence API",
-    "version": "0.27.1"
+    "version": "0.28.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -8610,6 +8988,46 @@
         "x-openai-isConsequential": false
       }
     },
+    "/v1/operations/timeseries": {
+      "post": {
+        "description": "Returns bounded pages of dated production, material, office, workflow, or job-tracking records. Use every page before calculating portfolio averages. This operation is read-only.",
+        "operationId": "getOperationalTimeSeries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationalTimeSeriesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalTimeSeriesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve paginated dated operational records",
+        "x-openai-isConsequential": false
+      }
+    },
     "/v1/reporting/chart-data": {
       "post": {
         "description": "Reuses the authoritative sales, operations, office, or production-budget service and returns a normalized chart specification with bounded, deterministically ordered rows plus a versioned display and staging contract. The operation is read-only and does not generate narrative conclusions.",
@@ -8688,126 +9106,6 @@
           }
         },
         "summary": "Download a chart-ready business dataset as CSV",
-        "x-openai-isConsequential": false
-      }
-    },
-    "/v1/roof-measure/calculate": {
-      "post": {
-        "description": "Calculates plan area and perimeter from reviewed footprint candidates or custom polygons. Optional pitch adds surface area. Custom polygons receive a tightly centered satellite overlay. No AI service is called, and estimator verification is always required.",
-        "operationId": "calculateRoofMeasurement",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RoofMeasureCalculationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoofMeasureCalculationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Calculate roof area and perimeter from reviewed polygons",
-        "x-openai-isConsequential": false
-      }
-    },
-    "/v1/roof-measure/context": {
-      "post": {
-        "description": "Returns short-lived signed satellite and footprint-overlay images, bounded building-footprint candidates, calibration, and optional public LiDAR coverage metadata. The operation does not call an LLM, OpenAI, or SAM2 and does not create a final roof measurement.",
-        "operationId": "getRoofMeasureContext",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RoofMeasureContextRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoofMeasureContextResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Retrieve calibrated roof imagery and footprint evidence",
-        "x-openai-isConsequential": false
-      }
-    },
-    "/v1/roof-measure/segment": {
-      "post": {
-        "description": "Uses reviewed footprint IDs to fetch a tightly fitted source image and prompt private SAM2. LiDAR adds guarded high-band candidates when available. Automatically selects the top-ranked candidate and returns one zoomed review overlay; alternates remain internal diagnostics.",
-        "operationId": "segmentRoofMeasureContext",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RoofMeasureSegmentationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoofMeasureSegmentationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Select the best SAM2 roof mask and return a full-size review overlay",
         "x-openai-isConsequential": false
       }
     },

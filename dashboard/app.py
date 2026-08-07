@@ -110,8 +110,7 @@ from jobscan.job_search import (
     tokenize_search_text,
 )
 from dashboard.data_sources import (
-    DASHBOARD_CORE_PAGES,
-    DASHBOARD_LEGACY_PAGES,
+    DASHBOARD_PAGES,
     audit_notes_for_page,
     references_for_page,
 )
@@ -27502,11 +27501,7 @@ def render_dashboard_source_references(page: str) -> None:
 
 
 def render_dashboard_page(page: str) -> None:
-    if page == "Owner Overview":
-        owner_overview_page()
-    elif page == "Ask Spray-Tec":
-        ask_spraytec_page()
-    elif page == "Job Board":
+    if page == "Job Board":
         job_board_page()
     elif page == "Office Timesheet":
         office_timesheet_entry_page()
@@ -27522,48 +27517,18 @@ def render_dashboard_page(page: str) -> None:
         operations_dashboard_page()
     elif page == "Schedule Calendar":
         schedule_calendar_page()
-    elif page == "Estimating Assistant":
-        estimator_prototype_page()
     elif page == "AI Roof Measure":
         render_ai_roof_measure_page_lazy()
-    elif page == "BidScope AI":
-        render_foamscope_page_lazy()
     elif page == "Admin / Health":
         admin_health_page()
-    elif page == "Pipeline / Money":
-        pipeline_money_page()
-    elif page == "Sales Follow-Up":
-        sales_followup_page()
-    elif page == "Contracted Backlog / Scheduling":
-        contracted_backlog_scheduling_page()
-    elif page == "Project Scheduling":
-        project_scheduling_page()
     elif page == "Daily Crew Dispatch":
         daily_crew_dispatch_page()
     elif page == "Daily Production":
         daily_production_page()
-    elif page == "Jobs Needing Action":
-        jobs_needing_action_page()
-    elif page == "Closeout / Billing Risk":
-        closeout_billing_risk_page()
-    elif page == "Documentation Risk":
-        documentation_risk_page()
-    elif page == "Job Warnings":
-        job_warnings_page()
-    elif page == "Estimate Analytics":
-        estimate_analytics_page()
-    elif page == "Estimate Quality Issues":
-        estimate_quality_issues_page()
-    elif page == "Line Item Analysis":
-        line_item_analysis_page()
-    elif page == "Estimate Adders":
-        estimate_adders_page()
-    elif page == "STAMP Tracking":
-        stamp_tracking_page()
     elif page == "Pricing Catalog":
         pricing_catalog_page()
     else:
-        raw_tables_page()
+        raise ValueError(f"Unknown dashboard page: {page}")
     render_dashboard_source_references(page)
 
 
@@ -27574,31 +27539,16 @@ def main() -> None:
     with st.sidebar:
         render_sidebar_brand()
         render_database_target_debug()
-        show_legacy_pages = st.checkbox("Show legacy/raw dashboard pages", value=False)
         show_perf_timings = st.checkbox("Show performance timings", value=False, key="show_dashboard_perf_timings")
-        page_options = DASHBOARD_CORE_PAGES + (DASHBOARD_LEGACY_PAGES if show_legacy_pages else [])
         page = st.radio(
             "Page",
-            page_options,
+            DASHBOARD_PAGES,
+            index=0,
         )
         global_filter_pages = {
-            "Owner Overview",
             "Sales Dashboard",
             "Operations Dashboard",
             "Warranty Registry",
-            "Pipeline / Money",
-            "Sales Follow-Up",
-            "Contracted Backlog / Scheduling",
-            "Project Scheduling",
-            "Jobs Needing Action",
-            "Closeout / Billing Risk",
-            "Documentation Risk",
-            "Job Warnings",
-            "Estimate Analytics",
-            "Estimate Quality Issues",
-            "Line Item Analysis",
-            "Estimate Adders",
-            "STAMP Tracking",
         }
         if page in global_filter_pages:
             try:
@@ -27617,7 +27567,7 @@ def main() -> None:
     render_global_theme()
     render_page_watermark()
 
-    if database_startup_error and page not in {"Estimating Assistant", "Admin / Health"}:
+    if database_startup_error and page != "Admin / Health":
         show_database_error(database_startup_error)
         st.stop()
 

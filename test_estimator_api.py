@@ -1068,6 +1068,7 @@ def test_openapi_exposes_expected_operations() -> None:
         "getOfficeJobProgress",
         "getOperationsBacklog",
         "getOperationsSchedule",
+            "getOperationalTimeSeries",
             "getProductionBudgetHealth",
             "getQuickBooksAccountingExceptions",
             "getQuickBooksAccountingSummary",
@@ -1191,19 +1192,66 @@ def test_job_context_route_returns_404_for_unknown_job(monkeypatch) -> None:
     assert response.status_code == 404
 
 
+def test_operational_timeseries_route_returns_paginated_records(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_timeseries(**kwargs):
+        captured.update(kwargs)
+        return {
+            "schema_version": "spraytec.operational_timeseries.v1",
+            "as_of": "2026-08-07T12:00:00+00:00",
+            "dataset": kwargs["dataset"],
+            "date_field": "work_date",
+            "available_metrics": ["foam_sets"],
+            "filters_applied": {"scope_terms": kwargs["scope_terms"]},
+            "pagination": {
+                "page": kwargs["page"],
+                "page_size": kwargs["page_size"],
+                "total_records": 101,
+                "total_pages": 2,
+                "has_more": True,
+                "next_page": 2,
+            },
+            "records": [{"job_id": "JOB-1", "event_date": "2026-07-01", "foam_sets": 1.25}],
+            "source_tables": ["job_tracking_daily_entries"],
+            "calculation_guidance": ["Retrieve every page."],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        "services.estimator_api.server.get_operational_timeseries",
+        fake_timeseries,
+    )
+
+    response = client.post(
+        "/v1/operations/timeseries",
+        json={
+            "dataset": "job_tracking_daily",
+            "scope_terms": ["closed cell", "wall"],
+            "metric": "foam_sets",
+            "positive_only": True,
+            "page": 1,
+            "page_size": 100,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["pagination"]["next_page"] == 2
+    assert response.json()["records"][0]["foam_sets"] == 1.25
+    assert captured["scope_terms"] == ["closed cell", "wall"]
+    assert captured["positive_only"] is True
+
+
 def test_action_openapi_marks_read_only_posts_nonconsequential() -> None:
     spec = build_action_openapi()
 
     assert spec["paths"]["/v1/estimating/context"]["post"][
         "x-openai-isConsequential"
     ] is False
-    assert spec["paths"]["/v1/roof-measure/context"]["post"][
-        "x-openai-isConsequential"
-    ] is False
-    assert spec["paths"]["/v1/roof-measure/calculate"]["post"][
-        "x-openai-isConsequential"
-    ] is False
-    assert spec["paths"]["/v1/roof-measure/segment"]["post"][
+    assert "/v1/roof-measure/context" not in spec["paths"]
+    assert "/v1/roof-measure/calculate" not in spec["paths"]
+    assert "/v1/roof-measure/segment" not in spec["paths"]
+    assert spec["paths"]["/v1/operations/timeseries"]["post"][
         "x-openai-isConsequential"
     ] is False
     assert spec["paths"]["/v1/jobs/search"]["post"][
@@ -1245,6 +1293,14 @@ def test_action_openapi_marks_read_only_posts_nonconsequential() -> None:
     assert spec["paths"]["/v1/estimating/workbook-template"]["post"][
         "x-openai-isConsequential"
     ] is False
+
+    action_operations = [
+        operation
+        for path_item in spec["paths"].values()
+        for method, operation in path_item.items()
+        if method.lower() in {"get", "post"}
+    ]
+    assert len(action_operations) <= 30
     assert spec["paths"]["/v1/estimating/workbook-validation"]["post"][
         "x-openai-isConsequential"
     ] is True

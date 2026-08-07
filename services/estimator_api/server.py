@@ -44,6 +44,7 @@ from jobscan.business.operations_service import (
 from jobscan.business.office_service import get_office_activity
 from jobscan.business.office_progress_service import get_office_job_progress
 from jobscan.business.production_budget_service import get_production_budget_health
+from jobscan.business.timeseries_service import get_operational_timeseries
 from jobscan.business.sales_service import (
     get_sales_followups,
     get_sales_pipeline,
@@ -133,6 +134,8 @@ from .schemas import (
     OperationsBacklogRequest,
     OperationsIntelligenceResponse,
     OperationsScheduleRequest,
+    OperationalTimeSeriesRequest,
+    OperationalTimeSeriesResponse,
     OfficeActivityRequest,
     OfficeActivityResponse,
     OfficeJobProgressRequest,
@@ -178,7 +181,7 @@ app = FastAPI(
         "Estimator evidence, controlled workbook generation, and read-only "
         "operational intelligence for conversational agents."
     ),
-    version="0.27.1",
+    version="0.28.0",
     servers=[{"url": PUBLIC_API_ORIGIN}],
 )
 
@@ -1676,6 +1679,52 @@ def job_context(
         raise HTTPException(
             status_code=503,
             detail=f"Job intelligence is unavailable: {type(exc).__name__}.",
+        ) from exc
+
+
+@app.post(
+    "/v1/operations/timeseries",
+    response_model=OperationalTimeSeriesResponse,
+    response_model_exclude_none=True,
+    operation_id="getOperationalTimeSeries",
+    summary="Retrieve paginated dated operational records",
+    description=(
+        "Returns bounded pages of dated production, material, office, workflow, or job-tracking records. "
+        "Use every page before calculating portfolio averages. This operation is read-only."
+    ),
+)
+def operational_timeseries(
+    request: Request,
+    payload: OperationalTimeSeriesRequest,
+) -> OperationalTimeSeriesResponse:
+    _require_api_request(request)
+    try:
+        return OperationalTimeSeriesResponse.model_validate(get_operational_timeseries(
+            database_url=_database_url(),
+            dataset=payload.dataset,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            job_ids=payload.job_ids,
+            division=payload.division,
+            query=payload.query,
+            scope_terms=payload.scope_terms,
+            metric=payload.metric or "",
+            positive_only=payload.positive_only,
+            page=payload.page,
+            page_size=payload.page_size,
+            sort_order=payload.sort_order,
+        ))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except JobIntelligenceUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Operational time series is unavailable: {type(exc).__name__}.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Operational time series is unavailable: {type(exc).__name__}.",
         ) from exc
 
 
