@@ -61,6 +61,9 @@ The platform currently includes:
   identities, operational state, normalized evidence, and reporting datasets.
 - `scripts/daily_refresh.sh` is the normal incremental refresh path. Full scans,
   historical backfills, and identifier repair remain explicit operations.
+- The scheduled scanner is being migrated to an Azure Container Apps Job with
+  persistent Azure Files for its cache manifests and output diagnostics; see
+  [`docs/azure_job_scanner.md`](docs/azure_job_scanner.md).
 - The Streamlit dashboard and SAM2 service run on the office Mac Studio. The
   dashboard is published through Cloudflare Access/Tunnel; SAM2 stays private.
 - The Business API runs in Azure Container Apps. Changes to its build inputs on

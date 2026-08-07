@@ -1,0 +1,123 @@
+name: Deploy Spray-Tec Job Scanner
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/deploy-job-scanner.yml"
+      - "config/sharepoint_scan_roots.yaml"
+      - "dashboard/**"
+      - "db/**"
+      - "jobscan/**"
+      - "requirements.txt"
+      - "scripts/azure_scanner_entrypoint.sh"
+      - "scripts/daily_refresh.sh"
+      - "scripts/refresh_dashboard_snapshots.py"
+      - "services/job_scanner/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: spraytec-job-scanner-production
+  cancel-in-progress: false
+
+env:
+  AZURE_CLIENT_ID: 82512f85-dbb5-442e-92c1-3d40e438e85d
+  AZURE_TENANT_ID: 6859aac8-d2d9-40fb-8fe5-5d428cb3ce68
+  AZURE_SUBSCRIPTION_ID: 9cf94090-8859-400a-87c4-48dfdd3c7e2b
+  AZURE_RESOURCE_GROUP: spraytec-ai-rg
+  AZURE_CONTAINER_JOB: spraytec-job-scanner
+  ACR_NAME: spraytecaiacr9cf94090
+  ACR_LOGIN_SERVER: spraytecaiacr9cf94090.azurecr.io
+  IMAGE_NAME: spraytec-job-scanner
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Azure Container Apps CLI support
+        run: az extension add --name containerapp --upgrade
+
+      - name: Build immutable scanner image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --file services/job_scanner/Dockerfile \
+            --tag "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}" \
+            .
+
+      - name: Smoke-test scanner image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker run \
+            --rm \
+            --platform linux/amd64 \
+            --entrypoint bash \
+            "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}" \
+            -n /app/scripts/daily_refresh.sh
+          docker run \
+            --rm \
+            --platform linux/amd64 \
+            --env DATABASE_URL=postgresql://scanner:placeholder@localhost/scanner \
+            --env MS_TENANT_ID=placeholder \
+            --env MS_CLIENT_ID=placeholder \
+            --env MS_CLIENT_SECRET=placeholder \
+            --env SCANNER_REQUIRE_SEEDED_CACHE=0 \
+            --env SCANNER_PREFLIGHT_ONLY=1 \
+            "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Push image to Azure Container Registry
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          az acr login --name "${ACR_NAME}"
+          docker push "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Require bootstrapped Container Apps Job
+        run: |
+          az containerapp job show \
+            --name "${AZURE_CONTAINER_JOB}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --output none
+
+      - name: Deploy scanner job image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          az containerapp job update \
+            --name "${AZURE_CONTAINER_JOB}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --image "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}" \
+            --output none
+
+      - name: Verify deployed scanner image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          expected_image="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+          live_image="$(az containerapp job show \
+            --name "${AZURE_CONTAINER_JOB}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --query 'properties.template.containers[0].image' \
+            --output tsv)"
+          test "${live_image}" = "${expected_image}"
+          echo "Scanner job image is current: ${live_image}"
