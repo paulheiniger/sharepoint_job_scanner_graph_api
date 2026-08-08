@@ -1173,7 +1173,7 @@ class JobSearchRequest(BaseModel):
     )
     job_ids: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
         default_factory=list,
-        max_length=25,
+        max_length=100,
         description="Optional authoritative job IDs to retrieve.",
     )
     division: str = Field(default="", max_length=100)
@@ -1183,6 +1183,21 @@ class JobSearchRequest(BaseModel):
         default="",
         max_length=200,
         description="Exact deal owner or assigned user.",
+    )
+    material_system: str = Field(
+        default="",
+        max_length=200,
+        description="Material or product-system text matched across Job Board sources.",
+    )
+    project_type: str = Field(
+        default="",
+        max_length=200,
+        description="Project classification text matched across Job Board sources.",
+    )
+    substrate: str = Field(
+        default="",
+        max_length=200,
+        description="Substrate or roof-type text matched across Job Board sources.",
     )
     job_year: int | None = Field(
         default=None,
@@ -1194,7 +1209,19 @@ class JobSearchRequest(BaseModel):
         default=None,
         description="True returns jobs with operational warnings or missing artifacts.",
     )
-    limit: int = Field(default=10, ge=1, le=25)
+    page: int = Field(default=1, ge=1, le=1000)
+    page_size: int = Field(
+        default=25,
+        ge=1,
+        le=100,
+        description="Compact page size; paginate rather than requesting oversized responses.",
+    )
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        le=100,
+        description="Deprecated page-size alias retained for older Assistant calls.",
+    )
 
 
 class JobSourceLink(BaseModel):
@@ -1214,12 +1241,13 @@ class JobSearchResponse(BaseModel):
     as_of: str
     filters_applied: dict[str, Any]
     headline_metrics: dict[str, Any]
-    records: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
     attention_items: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
     source_links: list[JobSourceLink] = Field(default_factory=list)
     source_tables: list[str] = Field(default_factory=list)
     data_freshness: dict[str, Any] = Field(default_factory=dict)
     coverage: dict[str, Any] = Field(default_factory=dict)
+    pagination: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     response_budget: dict[str, Any] = Field(default_factory=dict)
 

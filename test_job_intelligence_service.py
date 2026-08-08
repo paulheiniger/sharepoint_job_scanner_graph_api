@@ -48,10 +48,27 @@ def job_engine():
             )
         )
         connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN source_year INTEGER"))
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN vsimple_project_type TEXT"))
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN vsimple_spray_tec_system TEXT"))
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN template_material_system TEXT"))
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN document_material_system TEXT"))
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN document_substrate TEXT"))
+        connection.execute(text("ALTER TABLE job_board_static_snapshot ADD COLUMN vsimple_building_use TEXT"))
         connection.execute(
             text(
                 "UPDATE job_board_static_snapshot SET source_year = "
                 "CASE WHEN job_id = 'JOB-1' THEN 2026 ELSE 2025 END"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE job_board_static_snapshot SET "
+                "vsimple_project_type = CASE WHEN job_id = 'JOB-1' THEN 'Commercial Roofing' ELSE 'Insulation' END, "
+                "vsimple_spray_tec_system = CASE WHEN job_id = 'JOB-1' THEN 'Silicone Restoration' ELSE NULL END, "
+                "template_material_system = CASE WHEN job_id = 'JOB-2' THEN 'Closed-cell spray foam' ELSE NULL END, "
+                "document_material_system = CASE WHEN job_id = 'JOB-1' THEN 'Silicone' ELSE 'Spray foam' END, "
+                "document_substrate = CASE WHEN job_id = 'JOB-1' THEN 'Metal' ELSE 'Concrete' END, "
+                "vsimple_building_use = CASE WHEN job_id = 'JOB-1' THEN 'Warehouse' ELSE 'Manufacturing' END"
             )
         )
         connection.execute(
@@ -235,6 +252,37 @@ def test_search_jobs_filters_by_source_job_year() -> None:
     assert result["filters_applied"]["job_year"] == 2026
     assert [row["job_id"] for row in result["records"]] == ["JOB-1"]
     assert result["records"][0]["source_year"] == 2026
+
+
+def test_search_jobs_returns_paginated_job_board_dimensions() -> None:
+    first_page = search_jobs(
+        engine=job_engine(),
+        material_system="silicone",
+        project_type="commercial",
+        substrate="metal",
+        page=1,
+        page_size=1,
+    )
+
+    assert first_page["pagination"] == {
+        "page": 1,
+        "page_size": 1,
+        "total_records": 1,
+        "total_pages": 1,
+        "has_more": False,
+    }
+    assert first_page["records"][0]["job_id"] == "JOB-1"
+    assert first_page["records"][0]["material_system"] == "Silicone Restoration"
+    assert first_page["records"][0]["project_type"] == "Commercial Roofing"
+    assert first_page["records"][0]["substrate"] == "Metal"
+    assert first_page["records"][0]["building_type"] == "Warehouse"
+    assert first_page["records"][0]["dimension_sources"]["material_system"] == "vsimple_spray_tec_system"
+
+    all_jobs = search_jobs(engine=job_engine(), page=1, page_size=1)
+    assert all_jobs["pagination"]["total_records"] == 2
+    assert all_jobs["pagination"]["has_more"] is True
+    second_page = search_jobs(engine=job_engine(), page=2, page_size=1)
+    assert second_page["records"][0]["job_id"] != all_jobs["records"][0]["job_id"]
 
 
 def test_job_context_combines_authoritative_sources_and_labels_fallback() -> None:

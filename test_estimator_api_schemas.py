@@ -420,11 +420,19 @@ def test_action_server_url_requires_https_origin() -> None:
 
 
 def test_job_search_request_is_bounded_and_read_only() -> None:
-    request = JobSearchRequest(query="Acme", needs_attention=True, limit=25)
-    assert request.limit == 25
+    request = JobSearchRequest(
+        query="Acme",
+        needs_attention=True,
+        material_system="silicone",
+        page=2,
+        page_size=100,
+    )
+    assert request.page == 2
+    assert request.page_size == 100
+    assert request.material_system == "silicone"
 
     with pytest.raises(ValidationError):
-        JobSearchRequest(limit=26)
+        JobSearchRequest(page_size=101)
     with pytest.raises(ValidationError):
         JobSearchRequest(query="Acme", update_status="Completed")
 

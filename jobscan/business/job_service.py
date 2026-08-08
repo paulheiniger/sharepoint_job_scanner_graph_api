@@ -14,6 +14,7 @@ from jobscan.db_connections import create_resilient_engine
 
 MAX_JOB_SEARCH_RESULTS = 25
 MAX_JOB_SEARCH_CANDIDATES = 100
+MAX_JOB_BOARD_PAGE_SIZE = 100
 MAX_CONTEXT_DOCUMENTS = 20
 MAX_CONTEXT_DAILY_ENTRIES = 10
 MAX_CONTEXT_TIMESHEET_ENTRIES = 10
@@ -27,6 +28,9 @@ JOB_FIELDS = (
     "customer",
     "job_name",
     "job_type",
+    "project_type",
+    "vsimple_project_type",
+    "vsimple_deal_type",
     "site_address",
     "city",
     "state",
@@ -62,6 +66,27 @@ JOB_FIELDS = (
     "warranty_url",
     "aerial_url",
     "estimate_file",
+    "material_system",
+    "product_system",
+    "vsimple_spray_tec_system",
+    "template_material_system",
+    "document_material_system",
+    "coating_type",
+    "foam_type",
+    "material_type",
+    "roof_system",
+    "substrate",
+    "roof_type",
+    "vsimple_roof_type",
+    "document_substrate",
+    "building_type",
+    "vsimple_construction_type",
+    "vsimple_building_use",
+    "warranty_type",
+    "document_warranty_type",
+    "warranty_years",
+    "template_warranty_years",
+    "document_warranty_years",
     "warnings",
     "has_warnings",
     "completed_missing_invoice",
@@ -223,15 +248,23 @@ def search_jobs(
     pipeline_status: str = "",
     workflow_status: str = "",
     owner: str = "",
+    material_system: str = "",
+    project_type: str = "",
+    substrate: str = "",
     job_year: int | None = None,
     needs_attention: bool | None = None,
-    limit: int = 10,
+    page: int = 1,
+    page_size: int = 25,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     resolved_engine, owns_engine = _resolve_engine(database_url, engine)
     try:
         relation, columns = _job_relation(resolved_engine)
-        applied_limit = max(1, min(int(limit), MAX_JOB_SEARCH_RESULTS))
-        requested_job_ids = _unique_nonblank(job_ids)[:MAX_JOB_SEARCH_RESULTS]
+        applied_page = max(1, int(page))
+        requested_size = limit if limit is not None else page_size
+        applied_page_size = max(1, min(int(requested_size), MAX_JOB_BOARD_PAGE_SIZE))
+        offset = (applied_page - 1) * applied_page_size
+        requested_job_ids = _unique_nonblank(job_ids)[:MAX_JOB_BOARD_PAGE_SIZE]
         params: dict[str, Any] = {}
         conditions: list[str] = []
 
@@ -272,6 +305,38 @@ def search_jobs(
                 conditions.append(f"LOWER(COALESCE(j.{field}, '')) = :{field}")
                 params[field] = normalized.lower()
 
+        for filter_name, value, source_fields in (
+            (
+                "material_system",
+                material_system,
+                (
+                    "material_system", "product_system", "vsimple_spray_tec_system",
+                    "template_material_system", "document_material_system",
+                    "coating_type", "foam_type", "material_type", "roof_system",
+                ),
+            ),
+            (
+                "project_type",
+                project_type,
+                ("project_type", "vsimple_project_type", "vsimple_deal_type", "job_type"),
+            ),
+            (
+                "substrate",
+                substrate,
+                ("substrate", "roof_type", "vsimple_roof_type", "document_substrate"),
+            ),
+        ):
+            normalized = str(value or "").strip()
+            available = [field for field in source_fields if field in columns]
+            if normalized and available:
+                conditions.append(
+                    "(" + " OR ".join(
+                        f"LOWER(COALESCE(j.{field}, '')) LIKE :{filter_name}"
+                        for field in available
+                    ) + ")"
+                )
+                params[filter_name] = f"%{normalized.lower()}%"
+
         if job_year is not None:
             if "source_year" not in columns:
                 raise JobIntelligenceUnavailableError(
@@ -302,21 +367,33 @@ def search_jobs(
                 conditions.append(expression if needs_attention else f"NOT {expression}")
 
         selected_fields = _available_fields(columns, JOB_FIELDS)
-        sql = f"SELECT {', '.join(f'j.{field}' for field in selected_fields)} FROM {relation} j"
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY j.updated_at DESC NULLS LAST" if "updated_at" in columns else " ORDER BY j.job_id"
-        sql += " LIMIT :candidate_limit"
-        params["candidate_limit"] = MAX_JOB_SEARCH_CANDIDATES
+        where_sql = " WHERE " + " AND ".join(conditions) if conditions else ""
+        count_statement = text(f"SELECT COUNT(*) AS row_count FROM {relation} j{where_sql}")
+        if requested_job_ids:
+            count_statement = count_statement.bindparams(bindparam("job_ids", expanding=True))
+        count_rows = _query_rows(resolved_engine, count_statement, params)
+        total_records = int(count_rows[0].get("row_count") or 0) if count_rows else 0
+
+        sql = f"SELECT {', '.join(f'j.{field}' for field in selected_fields)} FROM {relation} j{where_sql}"
+        order_fields = [
+            field for field in ("refreshed_at", "updated_at", "job_id") if field in columns
+        ]
+        sql += " ORDER BY " + ", ".join(
+            f"j.{field} DESC NULLS LAST" if field != "job_id" else "j.job_id"
+            for field in order_fields
+        )
+        sql += " LIMIT :page_size OFFSET :offset"
+        params["page_size"] = applied_page_size
+        params["offset"] = offset
         statement = text(sql)
         if requested_job_ids:
             statement = statement.bindparams(bindparam("job_ids", expanding=True))
         base_rows = _query_rows(resolved_engine, statement, params)
         enriched = _enrich_jobs(resolved_engine, base_rows)
-        records = [_job_search_record(row) for row in enriched[:applied_limit]]
+        records = [_job_search_record(row) for row in enriched]
         attention_items = [
             item
-            for row in enriched[:applied_limit]
+            for row in enriched
             for item in _attention_items(row)
         ][:25]
         sources = [relation]
@@ -340,49 +417,57 @@ def search_jobs(
                     "pipeline_status": pipeline_status.strip() or None,
                     "workflow_status": workflow_status.strip() or None,
                     "owner": owner.strip() or None,
+                    "material_system": material_system.strip() or None,
+                    "project_type": project_type.strip() or None,
+                    "substrate": substrate.strip() or None,
                     "job_year": job_year,
                     "needs_attention": needs_attention,
-                    "limit": applied_limit,
+                    "page": applied_page,
+                    "page_size": applied_page_size,
                 }.items()
                 if value is not None
             },
             "headline_metrics": {
-                "matching_candidates": len(enriched),
+                "matching_candidates": total_records,
                 "returned_records": len(records),
                 "estimated_value": _sum_numeric(
                     row.get("estimated_value") for row in records
                 ),
                 "records_needing_attention": sum(
-                    bool(_attention_items(row)) for row in enriched[:applied_limit]
+                    bool(_attention_items(row)) for row in enriched
                 ),
                 "scheduled_records": sum(
                     bool(row.get("estimated_start_date"))
-                    for row in enriched[:applied_limit]
+                    for row in enriched
                 ),
             },
             "records": records,
             "attention_items": attention_items,
             "source_links": _dedupe_links(
                 link
-                for row in enriched[:applied_limit]
+                for row in enriched
                 for link in _job_source_links(row, [])
             ),
             "source_tables": sources,
             "data_freshness": {"job_data_as_of": as_of},
             "coverage": {
-                "candidate_limit": MAX_JOB_SEARCH_CANDIDATES,
-                "result_limit": applied_limit,
-                "results_truncated": len(enriched) > applied_limit,
+                "page_size_limit": MAX_JOB_BOARD_PAGE_SIZE,
+                "results_truncated": offset + len(records) < total_records,
             },
-            "warnings": (
-                [
-                    "Search reached the bounded candidate limit; narrow the filters for complete results."
-                ]
-                if len(base_rows) >= MAX_JOB_SEARCH_CANDIDATES
-                else []
-            ),
+            "pagination": {
+                "page": applied_page,
+                "page_size": applied_page_size,
+                "total_records": total_records,
+                "total_pages": (
+                    (total_records + applied_page_size - 1) // applied_page_size
+                    if total_records
+                    else 0
+                ),
+                "has_more": offset + len(records) < total_records,
+            },
+            "warnings": [],
             "response_budget": {
-                "max_records": MAX_JOB_SEARCH_RESULTS,
+                "max_records": MAX_JOB_BOARD_PAGE_SIZE,
                 "returned_records": len(records),
             },
         }
@@ -824,6 +909,47 @@ def _job_search_record(row: Mapping[str, Any]) -> dict[str, Any]:
         "refreshed_at",
     )
     record = _select_present(row, fields)
+    dimensions: dict[str, tuple[str, tuple[str, ...]]] = {
+        "project_type": (
+            "project classification",
+            ("project_type", "vsimple_project_type", "vsimple_deal_type", "job_type"),
+        ),
+        "material_system": (
+            "material system",
+            (
+                "material_system", "product_system", "vsimple_spray_tec_system",
+                "template_material_system", "document_material_system", "coating_type",
+                "foam_type", "material_type", "roof_system",
+            ),
+        ),
+        "substrate": (
+            "substrate",
+            ("substrate", "roof_type", "vsimple_roof_type", "document_substrate"),
+        ),
+        "building_type": (
+            "building type",
+            ("building_type", "vsimple_construction_type", "vsimple_building_use"),
+        ),
+        "warranty_type": (
+            "warranty type",
+            ("warranty_type", "document_warranty_type"),
+        ),
+        "warranty_years": (
+            "warranty duration",
+            ("warranty_years", "template_warranty_years", "document_warranty_years"),
+        ),
+    }
+    dimension_sources: dict[str, str] = {}
+    for target, (_label, source_fields) in dimensions.items():
+        for source_field in source_fields:
+            value = row.get(source_field)
+            if value is None or not str(value).strip():
+                continue
+            record[target] = value
+            dimension_sources[target] = source_field
+            break
+    if dimension_sources:
+        record["dimension_sources"] = dimension_sources
     record["attention_items"] = _attention_items(row)
     return record
 

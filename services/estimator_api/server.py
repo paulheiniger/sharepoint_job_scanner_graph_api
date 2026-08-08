@@ -1331,8 +1331,8 @@ def download_estimate_workbook(
     operation_id="searchJobs",
     summary="Search the Spray-Tec job board",
     description=(
-        "Returns a bounded list of jobs and operational attention signals. "
-        "Use the returned stable job_id with getJobContext for detail."
+        "Returns paginated Job Board dimensions and stable job IDs for filtering "
+        "other datasets. Use getJobContext for one-job detail."
     ),
 )
 def job_search(
@@ -1349,8 +1349,13 @@ def job_search(
             pipeline_status=payload.pipeline_status,
             workflow_status=payload.workflow_status,
             owner=payload.owner,
+            material_system=payload.material_system,
+            project_type=payload.project_type,
+            substrate=payload.substrate,
             job_year=payload.job_year,
             needs_attention=payload.needs_attention,
+            page=payload.page,
+            page_size=payload.page_size,
             limit=payload.limit,
         )
         return JobSearchResponse.model_validate(result)
