@@ -10,17 +10,20 @@ from .server import app
 
 
 OUTPUT_PATH = Path(__file__).with_name("openapi.json")
+DEFAULT_SERVER_URL = (
+    "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
+)
 
 
 def build_action_openapi(
-    server_url: str = "https://estimator-api.example.com",
+    server_url: str = DEFAULT_SERVER_URL,
 ) -> dict:
     normalized_server_url = _validated_server_url(server_url)
     specification = copy.deepcopy(app.openapi())
     specification["servers"] = [
         {
             "url": normalized_server_url,
-            "description": "Replace with the deployed estimator API host.",
+            "description": "Production Spray-Tec Business API.",
         }
     ]
     specification["paths"].pop("/health", None)
@@ -82,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--server-url",
-        default="https://estimator-api.example.com",
+        default=DEFAULT_SERVER_URL,
         help="Public HTTPS origin used by the action.",
     )
     parser.add_argument(

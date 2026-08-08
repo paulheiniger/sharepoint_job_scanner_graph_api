@@ -9215,8 +9215,8 @@
   },
   "servers": [
     {
-      "description": "Replace with the deployed estimator API host.",
-      "url": "https://estimator-api.example.com"
+      "description": "Production Spray-Tec Business API.",
+      "url": "https://spraytec-business-api.icysand-5925ab36.eastus2.azurecontainerapps.io"
     }
   ]
 }
